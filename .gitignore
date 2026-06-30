@@ -1,5 +1,7 @@
 node_modules/
 .env
+.env.*
+!.env.production.example
 *.log
 scratch/
 uploads/

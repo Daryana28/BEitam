@@ -1,8 +1,29 @@
 // be/server.js
-import "dotenv/config";
+import dotenv from "dotenv";
 import http from "http";
 import jwt from "jsonwebtoken";
 import { Server } from "socket.io";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const appEnv =
+ process.env.APP_ENV ||
+ process.env.NODE_ENV ||
+ "development";
+
+dotenv.config({
+ path: path.join(
+  __dirname,
+  `.env.${appEnv}`
+ ),
+});
+dotenv.config({
+ path: path.join(__dirname, ".env"),
+ override: false,
+});
 
 const { default: app } =
  await import("./app.js");
