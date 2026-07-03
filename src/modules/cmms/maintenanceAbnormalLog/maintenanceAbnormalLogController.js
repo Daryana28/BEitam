@@ -134,6 +134,11 @@ export const getAllAbnormalLogs = async (req, res) => {
           required: false,
           include: [
             {
+              model: StandardMaintenance,
+              as: "StandardMaintenance",
+              required: false
+            },
+            {
               model: Asset,
               as: "asset",
               required: false,

@@ -12,6 +12,7 @@ const findByEmail = async (email) => {
     "email",
     "password_hash",
     "must_change_password",
+    "profile_picture",
   ]);
 
   return User.findOne({

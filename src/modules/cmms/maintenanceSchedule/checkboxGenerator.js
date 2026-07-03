@@ -16,22 +16,25 @@ export const parsePeriodik = (periodik) => {
   }
   const str = periodik.toLowerCase().trim();
 
-  if (str.includes("2x/w") || str.includes("2x/minggu")) {
-    return { type: "weekly", freq: 2, unit: "w" };
+  if (str.includes("daily") || str.includes("harian")) {
+    return { type: "daily", freq: 1, unit: "d" };
   }
-  if (str.includes("1x/w") || str.includes("1x/minggu") || str.includes("minggu") || str.includes("week")) {
+  if (str.includes("2x/minggu") || str.includes("biweekly")) {
+    return { type: "biweekly", freq: 1, unit: "w" };
+  }
+  if (str.includes("1x/minggu") || str.includes("1x/w") || str.includes("minggu") || str.includes("week")) {
     return { type: "weekly", freq: 1, unit: "w" };
   }
-  if (str.includes("3 bulan") || str.includes("3month") || str.includes("quarter")) {
+  if (str.includes("3x/bulan") || str.includes("3 bulan") || str.includes("quarter")) {
     return { type: "quarterly", freq: 1, unit: "q" };
   }
-  if (str.includes("6 bulan") || str.includes("6month") || str.includes("half")) {
+  if (str.includes("6x/bulan") || str.includes("6 bulan") || str.includes("half")) {
     return { type: "half_yearly", freq: 1, unit: "h" };
   }
-  if (str.includes("1 tahun") || str.includes("tahun") || str.includes("year")) {
+  if (str.includes("1x/tahun") || str.includes("1 tahun") || str.includes("tahun") || str.includes("year")) {
     return { type: "yearly", freq: 1, unit: "y" };
   }
-  // Default/fallback is monthly
+  // Default/fallback is monthly (1x/bulan)
   return { type: "monthly", freq: 1, unit: "m" };
 };
 
@@ -111,68 +114,37 @@ export const generateCheckboxDates = async (year, periodik) => {
   const holidaysSet = await getHolidaysSet(year);
   const dates = [];
 
-  if (type === "weekly") {
-    // Loop through weeks of the year
-    // We determine start of week 1 as Monday of the first ISO week of the year
+  if (type === "daily") {
     let current = dayjs().year(year).startOf("year");
-    // Align to the first Monday of the year (could be in previous year, but we restrict to the target year)
-    while (current.year() < year || (current.year() === year && current.isoWeekday() !== 1)) {
+    const endOfYear = dayjs(`${year}-12-31`);
+    while (current.isBefore(endOfYear) || current.isSame(endOfYear, "day")) {
+      if (isWorkingDay(current, holidaysSet)) {
+        dates.push(current.format("YYYY-MM-DD"));
+      }
       current = current.add(1, "day");
     }
-
-    const endOfYear = dayjs(`${year}-12-31`);
-
-    while (current.isBefore(endOfYear) || current.isSame(endOfYear, "day")) {
-      if (current.year() !== year) {
-        current = current.add(1, "week");
-        continue;
-      }
-
-      if (freq === 1) {
-        // Find 1 working day in this week (Mon-Fri)
-        let found = false;
-        for (let i = 0; i < 5; i++) {
-          const testDate = current.add(i, "day");
-          if (testDate.year() === year && isWorkingDay(testDate, holidaysSet)) {
-            dates.push(testDate.format("YYYY-MM-DD"));
-            found = true;
-            break;
-          }
-        }
-        // Fallback if no working day found in the entire week
-        if (!found) {
-          dates.push(current.format("YYYY-MM-DD"));
-        }
-      } else if (freq === 2) {
-        // Find 2 working days: one in Mon-Wed, one in Thu-Fri
-        let foundFirst = false;
-        for (let i = 0; i < 3; i++) {
-          const testDate = current.add(i, "day");
-          if (testDate.year() === year && isWorkingDay(testDate, holidaysSet)) {
-            dates.push(testDate.format("YYYY-MM-DD"));
-            foundFirst = true;
-            break;
-          }
-        }
-        if (!foundFirst) {
-          dates.push(current.format("YYYY-MM-DD")); // fallback first
-        }
-
-        let foundSecond = false;
-        for (let i = 3; i < 5; i++) {
-          const testDate = current.add(i, "day");
-          if (testDate.year() === year && isWorkingDay(testDate, holidaysSet)) {
-            dates.push(testDate.format("YYYY-MM-DD"));
-            foundSecond = true;
-            break;
-          }
-        }
-        if (!foundSecond) {
-          dates.push(current.add(3, "day").format("YYYY-MM-DD")); // fallback second
+  } else if (type === "weekly" || type === "biweekly") {
+    const totalIsoWeeks = dayjs(`${year}-12-28`).isoWeek();
+    const step = type === "biweekly" ? 2 : 1;
+    for (let w = 1; w <= totalIsoWeeks; w += step) {
+      let current = dayjs(`${year}-01-04`).isoWeek(w).startOf('isoWeek');
+      let found = false;
+      for (let i = 0; i < 5; i++) {
+        let testDay = current.add(i, 'day');
+        if (testDay.year() === year && isWorkingDay(testDay, holidaysSet)) {
+          dates.push(testDay.format("YYYY-MM-DD"));
+          found = true;
+          break;
         }
       }
-
-      current = current.add(1, "week");
+      if (!found) {
+        let testDay = current.add(3, 'day');
+        if (testDay.year() === year) {
+          dates.push(testDay.format("YYYY-MM-DD"));
+        } else {
+          dates.push(testDay.year() < year ? `${year}-01-01` : `${year}-12-31`);
+        }
+      }
     }
   } else if (type === "monthly") {
     // 12 months

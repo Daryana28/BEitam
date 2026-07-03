@@ -1,6 +1,8 @@
 // be/src/modules/auth/authController.js
 import authService from "./authService.js";
 import writeAudit from "../../core/utils/writeAudit.js";
+import { User, Role, Department } from "../../models/index.js";
+import { getExistingUserColumns } from "../user/userColumnHelper.js";
 
 export const login = async (
  req,
@@ -182,9 +184,56 @@ export const me =
   req,
   res
  ) => {
-  return res.json({
-   success: true,
-   user:
-    req.user,
-  });
+  try {
+    if (!req.user?.id) {
+      return res.json({
+        success: true,
+        user: req.user,
+      });
+    }
+
+    const userAttributes = await getExistingUserColumns([
+      "user_id", "username", "full_name", "email", "profile_picture", "department_id"
+    ]);
+
+    const user = await User.findByPk(req.user.id, {
+      attributes: userAttributes,
+      include: [
+        { model: Role, as: "roles", attributes: ["role_name"] },
+        { model: Department, attributes: ["department_name"] },
+      ],
+    });
+
+    if (!user) {
+      return res.json({
+        success: true,
+        user: req.user,
+      });
+    }
+
+    const roles = user.roles?.map((r) => r.role_name) || [];
+    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    const profilePicture = user.profile_picture
+      ? (user.profile_picture.startsWith('http') ? user.profile_picture : `${baseUrl}${user.profile_picture}`)
+      : "";
+
+    return res.json({
+      success: true,
+      user: {
+        id: user.user_id,
+        username: user.username,
+        full_name: user.full_name,
+        email: user.email,
+        roles,
+        profile_picture: profilePicture,
+        department: user.Department?.department_name || "",
+      },
+    });
+  } catch (error) {
+    console.error("Error in /auth/me:", error);
+    return res.json({
+      success: true,
+      user: req.user,
+    });
+  }
  };

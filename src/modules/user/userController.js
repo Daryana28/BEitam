@@ -159,6 +159,10 @@ const getUserProfile = async (req, res) => {
     }
 
     const roles = user.roles?.map(r => r.role_name) || [];
+    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    const profilePicture = user.profile_picture
+      ? (user.profile_picture.startsWith('http') ? user.profile_picture : `${baseUrl}${user.profile_picture}`)
+      : "";
 
     return res.status(200).json({
       success: true,
@@ -168,7 +172,7 @@ const getUserProfile = async (req, res) => {
         full_name: user.full_name,
         email: user.email,
         phone: user.phone || "",
-        profile_picture: user.profile_picture || "",
+        profile_picture: profilePicture,
         department: user.Department?.department_name || "IT",
         roles,
       }
@@ -244,6 +248,8 @@ const updateUserProfilePicture = async (req, res) => {
     }
 
     const picturePath = `/uploads/profile/${req.file.filename}`;
+    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    const fullPictureUrl = `${baseUrl}${picturePath}`;
     await user.update(await pickExistingUserPayload({
       profile_picture: picturePath
     }));
@@ -252,7 +258,7 @@ const updateUserProfilePicture = async (req, res) => {
       success: true,
       message: "Foto profil berhasil diperbarui",
       data: {
-        profile_picture: picturePath
+        profile_picture: fullPictureUrl
       }
     });
   } catch (error) {

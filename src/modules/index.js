@@ -24,6 +24,7 @@ import userRoutes from "./user/userRoute.js";
 
 import inventoryRoutes from "./itam/inventory/inventoryRoute.js";
 import holidayRoutes from "./cmms/holiday/holidayRoutes.js";
+import dashboardRoutes from "./dashboard/dashboardRoute.js";
 
 const router =
     express.Router();
@@ -116,6 +117,11 @@ router.use(
 router.use(
     "/holidays",
     holidayRoutes
+);
+
+router.use(
+    "/dashboard",
+    dashboardRoutes
 );
 
 export default router;

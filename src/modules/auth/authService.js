@@ -133,21 +133,26 @@ const login = async (
    "Login success",
  });
 
- return {
-  token,
-  refreshToken,
-  user: {
-   id: user.user_id,
-   username:
-    user.username,
-   full_name:
-    user.full_name,
-   email:
-    user.email,
-   roles,
-   must_change_password: mustChangePassword,
-  },
- };
+  const profilePicture = user.profile_picture
+   ? (user.profile_picture.startsWith('http') ? user.profile_picture : `${req.protocol}://${req.get('host')}${user.profile_picture}`)
+   : "";
+
+  return {
+   token,
+   refreshToken,
+   user: {
+    id: user.user_id,
+    username:
+     user.username,
+    full_name:
+     user.full_name,
+    email:
+     user.email,
+    roles,
+    must_change_password: mustChangePassword,
+    profile_picture: profilePicture,
+   },
+  };
 };
 
 const refresh = async (refreshToken) => {
