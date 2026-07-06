@@ -49,6 +49,14 @@ export default (sequelize) =>
     type: DataTypes.STRING(100),
     allowNull: true,
    },
+   borrowed_from_item_name: {
+    type: DataTypes.STRING(255),
+    allowNull: true,
+   },
+   borrowed_from_item_no: {
+    type: DataTypes.STRING(50),
+    allowNull: true,
+   },
    borrowed_amount: {
     type: DataTypes.DECIMAL(18, 2),
     allowNull: false,
