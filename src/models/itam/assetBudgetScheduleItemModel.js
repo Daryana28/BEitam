@@ -31,6 +31,10 @@ export default (sequelize) =>
     type: DataTypes.STRING(255),
     allowNull: false,
    },
+   item_no: {
+    type: DataTypes.STRING(50),
+    allowNull: true,
+   },
    budget_plan_amount: {
     type: DataTypes.DECIMAL(18, 2),
     allowNull: false,
