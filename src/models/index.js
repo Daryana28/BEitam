@@ -19,6 +19,8 @@ import WarehouseStockModel from "./itam/warehouseStockModel.js";
 import InventoryTransactionModel from "./itam/inventoryTransactionModel.js";
 import AssetBudgetModel from "./itam/assetBudgetModel.js";
 import AssetBudgetScheduleItemModel from "./itam/assetBudgetScheduleItemModel.js";
+import OperationalBudgetModel from "./itam/operationalBudgetModel.js";
+import OperationalBudgetScheduleItemModel from "./itam/operationalBudgetScheduleItemModel.js";
 
 import TicketModel from "./itsm/ticketModel.js";
 
@@ -56,6 +58,8 @@ const InventoryTransaction =
  InventoryTransactionModel(sequelize);
 const AssetBudget = AssetBudgetModel(sequelize);
 const AssetBudgetScheduleItem = AssetBudgetScheduleItemModel(sequelize);
+const OperationalBudget = OperationalBudgetModel(sequelize);
+const OperationalBudgetScheduleItem = OperationalBudgetScheduleItemModel(sequelize);
 
 const Ticket = TicketModel(sequelize);
 const WorkOrder = WorkOrderModel(sequelize);
@@ -472,6 +476,8 @@ export {
  InventoryTransaction,
  AssetBudget,
  AssetBudgetScheduleItem,
+ OperationalBudget,
+ OperationalBudgetScheduleItem,
  AuditLog,
  Holiday,
 };
@@ -506,6 +512,8 @@ export default {
  InventoryTransaction,
  AssetBudget,
  AssetBudgetScheduleItem,
+ OperationalBudget,
+ OperationalBudgetScheduleItem,
  AuditLog,
  Holiday,
 };
