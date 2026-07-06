@@ -12,13 +12,13 @@ const resolveMustChangePassword = async (user) => {
 };
 
 const login = async (
- email,
+ identifier,
  password,
  req
 ) => {
  const user =
-  await authRepository.findByEmail(
-   email
+  await authRepository.findByIdentifier(
+   identifier
   );
 
  if (!user) {
@@ -33,7 +33,7 @@ const login = async (
    actionName:
     "LOGIN_FAILED",
    description:
-    `User not found: ${email}`,
+    `User not found: ${identifier}`,
   });
 
   const err =
@@ -170,8 +170,8 @@ const refresh = async (refreshToken) => {
  }
 
  const user =
-  await authRepository.findByEmail(
-   decoded.email
+  await authRepository.findByIdentifier(
+   decoded.email || decoded.username
   );
 
  if (!user) {

@@ -18,6 +18,7 @@ import assetRoutes from "./itam/assets/assetRoute.js";
 import assetFileRoutes from "./itam/assetFiles/assetFileRoute.js";
 import assetCategoryRoutes from "./itam/assetCategories/assetCategoryRoute.js";
 import assetBudgetRoutes from "./itam/assetBudget/assetBudgetRoute.js";
+import assetBudgetScheduleRoutes from "./itam/assetBudgetSchedule/assetBudgetScheduleRoute.js";
 import assetLifecycleRoutes from "./itam/assetLifecycle/assetLifecycleRoute.js";
 
 import userRoutes from "./user/userRoute.js";
@@ -97,6 +98,11 @@ router.use(
 router.use(
     "/asset-budgets",
     assetBudgetRoutes
+);
+
+router.use(
+    "/asset-budget-schedules",
+    assetBudgetScheduleRoutes
 );
 
 router.use(

@@ -1,8 +1,9 @@
 // be\src\modules\auth\authRepository.js
 import { User, Role, Permission } from "../../models/index.js";
+import { Op } from "sequelize";
 import { getExistingUserColumns } from "../user/userColumnHelper.js";
 
-const findByEmail = async (email) => {
+const findByIdentifier = async (identifier) => {
   const attributes = await getExistingUserColumns([
     "user_id",
     "company_id",
@@ -17,7 +18,10 @@ const findByEmail = async (email) => {
 
   return User.findOne({
     where: {
-      email,
+      [Op.or]: [
+        { email: identifier },
+        { username: identifier },
+      ],
       is_active: true,
     },
     attributes,
@@ -41,5 +45,5 @@ const findByEmail = async (email) => {
 };
 
 export default {
-  findByEmail,
+  findByIdentifier,
 };
