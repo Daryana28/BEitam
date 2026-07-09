@@ -380,7 +380,7 @@ export const upsertFlatStandardMaintenance = async (req, res) => {
       yearly_standard_id,
       kategori, subKategori, namaPerangkat, tipePerangkat, subPerangkat,
       fungsi, deskripsi,
-      pengecekan, standard, periodik, bagian, metode, alat
+      pengecekan, standard, periodik, bagian, metode, alat, planned_dates
     } = req.body;
 
     let sm = await StandardMaintenance.findOne({
@@ -432,7 +432,8 @@ export const upsertFlatStandardMaintenance = async (req, res) => {
         if (smCheck) {
           await smCheck.update({
             standard_maintenance_detail_id: smDetail.id,
-            pengecekan, standard, periodik, bagian, metode, alat
+            pengecekan, standard, periodik, bagian, metode, alat,
+            ...(planned_dates !== undefined ? { planned_dates } : {})
           }, { transaction });
         }
       }
@@ -440,7 +441,8 @@ export const upsertFlatStandardMaintenance = async (req, res) => {
       if (!smCheck) {
         smCheck = await StandardMaintenanceCheck.create({
           standard_maintenance_detail_id: smDetail.id,
-          pengecekan, standard, periodik, bagian, metode, alat
+          pengecekan, standard, periodik, bagian, metode, alat,
+          planned_dates: Array.isArray(planned_dates) ? planned_dates : []
         }, { transaction });
       }
     }
@@ -763,8 +765,6 @@ export const saveAndGenerateSchedule = async (req, res) => {
     const smCache = new Map();
     const detailCache = new Map();
     const checkCache = new Map();
-    const checkPlanMap = new Map();
-
     for (const [index, checkItem] of checks.entries()) {
       currentStage = `saving check row ${index + 1}`;
       const dbKategori = kategori.toUpperCase();
@@ -869,22 +869,24 @@ export const saveAndGenerateSchedule = async (req, res) => {
           periodik: checkItem.periodik || '1 Bulan',
           bagian: checkItem.bagian || '',
           metode: checkItem.metode || '',
-          alat: checkItem.alat || ''
+          alat: checkItem.alat || '',
+          planned_dates: Array.isArray(checkItem.planned_dates) ? checkItem.planned_dates : []
         }, { transaction });
       } else {
         await smCheck.update({
+          standard_maintenance_detail_id: smDetail.id,
           pengecekan: checkItem.pengecekan,
           standard: checkItem.standard || '',
           periodik: checkItem.periodik || '1 Bulan',
           bagian: checkItem.bagian || '',
           metode: checkItem.metode || '',
-          alat: checkItem.alat || ''
+          alat: checkItem.alat || '',
+          planned_dates: Array.isArray(checkItem.planned_dates) ? checkItem.planned_dates : []
         }, { transaction });
       }
       checkCache.set(`id:${smCheck.id}`, smCheck);
       savedCheckIds.push(smCheck.id);
       savedCheckSet.add(smCheck.id);
-      checkPlanMap.set(smCheck.id, Array.isArray(checkItem.planned_dates) ? checkItem.planned_dates : []);
     }
 
     // 4. Cleanup orphaned records that are not in configuration

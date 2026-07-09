@@ -38,12 +38,21 @@ export default (sequelize) =>
         allowNull: true,
       },
       planned_dates: {
-        type: DataTypes.VIRTUAL,
+        type: DataTypes.TEXT,
+        allowNull: true,
         get() {
-          return this.getDataValue("planned_dates") || [];
+          const raw = this.getDataValue("planned_dates");
+          if (!raw) return [];
+          if (Array.isArray(raw)) return raw;
+          try {
+            const parsed = JSON.parse(raw);
+            return Array.isArray(parsed) ? parsed : [];
+          } catch (error) {
+            return [];
+          }
         },
         set(val) {
-          this.setDataValue("planned_dates", Array.isArray(val) ? val : []);
+          this.setDataValue("planned_dates", JSON.stringify(Array.isArray(val) ? val : []));
         }
       },
       created_at: {

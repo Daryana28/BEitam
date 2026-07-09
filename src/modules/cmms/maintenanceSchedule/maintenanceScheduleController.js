@@ -4,6 +4,7 @@ import dayjs from "dayjs";
 import { Op } from "sequelize";
 
 const normalizeCategoryName = (value) => String(value || "").trim().toLowerCase();
+const PLAN_LEGEND = "□";
 
 const buildAssetCategoryCandidates = (kategori, subKategori, namaPerangkat, tipePerangkat, subPerangkat) => {
   const candidates = [];
@@ -78,6 +79,27 @@ const resolveAssetCategoryIdsSync = (kategori, subKategori, namaPerangkat, tipeP
   return categories
     .filter((category) => candidates.includes(normalizeCategoryName(category.category_name)))
     .map((category) => category.category_id);
+};
+
+const normalizeDateKey = (value) => {
+  if (!value) return "";
+  const parsed = dayjs(value);
+  return parsed.isValid() ? parsed.format("YYYY-MM-DD") : "";
+};
+
+const resolvePlannedDates = async (year, check, fallbackPeriodik) => {
+  const savedDates = Array.isArray(check?.planned_dates)
+    ? check.planned_dates.map(normalizeDateKey).filter(Boolean)
+    : [];
+
+  if (savedDates.length > 0) {
+    return [...new Set(savedDates)]
+      .filter((dateStr) => dayjs(dateStr).year() === Number(year))
+      .sort();
+  }
+
+  const periodikString = check?.periodik || fallbackPeriodik || "1 Bulan";
+  return generateCheckboxDates(year, periodikString);
 };
 
 export const generateSchedule = async (req, res) => {
@@ -244,13 +266,19 @@ export const generateSchedule = async (req, res) => {
         const completedActuals = existingActualList.filter(a => a.status !== "PLAN" || a.legend !== "□");
         const completedKeys = new Set(completedActuals.map(a => `${a.check_id}-${a.tanggal}`));
         const existingKeys = new Set(existingActualList.map(a => `${a.check_id}-${a.tanggal}`));
+        const planActuals = existingActualList.filter(a => a.status === "PLAN" && a.legend === PLAN_LEGEND);
+        const targetKeys = new Set();
 
         for (const check of checks) {
-          const periodikString = check.periodik || targetSchedule.periodik || derivedPeriodik || "1 Bulan";
-          const dates = await generateCheckboxDates(yearlyStandard.tahun, periodikString);
+          const dates = await resolvePlannedDates(
+            yearlyStandard.tahun,
+            check,
+            check.periodik || targetSchedule.periodik || derivedPeriodik || "1 Bulan"
+          );
 
           for (const date of dates) {
             const compositeKey = `${check.id}-${date}`;
+            targetKeys.add(compositeKey);
             if (!completedKeys.has(compositeKey) && !existingKeys.has(compositeKey)) {
               actualsToCreate.push({
                 schedule_id: targetSchedule.id,
@@ -264,6 +292,16 @@ export const generateSchedule = async (req, res) => {
             }
           }
         }
+
+        const planIdsToDelete = planActuals
+          .filter((actual) => !targetKeys.has(`${actual.check_id}-${actual.tanggal}`))
+          .map((actual) => actual.id);
+
+        if (planIdsToDelete.length > 0) {
+          await MaintenanceActual.destroy({
+            where: { id: { [Op.in]: planIdsToDelete } }
+          });
+        }
       }
     }
 
@@ -276,8 +314,11 @@ export const generateSchedule = async (req, res) => {
         const fallbackPeriodik = periodikByStandard.get(schedule.standard_maintenance_id) || "1 Bulan";
         const checks = sm?.details?.flatMap(d => d.pengecekanList || []) || [];
         for (const check of checks) {
-          const periodikString = check.periodik || schedule.periodik || fallbackPeriodik || "1 Bulan";
-          const dates = await generateCheckboxDates(yearlyStandard.tahun, periodikString);
+          const dates = await resolvePlannedDates(
+            yearlyStandard.tahun,
+            check,
+            check.periodik || schedule.periodik || fallbackPeriodik || "1 Bulan"
+          );
           for (const date of dates) {
             actualsToCreate.push({
               schedule_id: schedule.id,
@@ -549,8 +590,11 @@ export const generateCheckboxes = async (req, res) => {
       const actualRecords = [];
 
       for (const check of checks) {
-        const periodikString = check.periodik || schedule.periodik || "1 Bulan";
-        const dates = await generateCheckboxDates(year, periodikString);
+        const dates = await resolvePlannedDates(
+          year,
+          check,
+          check.periodik || schedule.periodik || "1 Bulan"
+        );
 
         for (const date of dates) {
           actualRecords.push({
@@ -788,6 +832,7 @@ export const getMonthlyScheduleMatrix = async (req, res) => {
             pengecekan: check.pengecekan,
             standard: check.standard,
             periodik: check.periodik,
+            planned_dates: Array.isArray(check.planned_dates) ? check.planned_dates : [],
             checkboxes: []
           });
         }
@@ -820,11 +865,16 @@ export const getMonthlyScheduleMatrix = async (req, res) => {
       actualsByCheckId.get(a.check_id).set(a.tanggal, a);
     });
 
-    // Generate virtual checkboxes for each matrix entry
+    // Generate virtual checkboxes for each matrix entry.
+    // Prefer planned_dates from standard maintenance so the Schedule tab reflects manual remapping immediately.
     const numYear = parseInt(year);
     for (const item of matrixData) {
       const checkActuals = actualsByCheckId.get(item.check_id) || new Map();
-      const allDates = await generateCheckboxDates(numYear, item.periodik);
+      const allDates = await resolvePlannedDates(
+        numYear,
+        { planned_dates: item.planned_dates, periodik: item.periodik },
+        item.periodik
+      );
 
       // Filter to requested month
       const monthDates = allDates.filter(d => d.startsWith(`${year}-${monthStr}`));

@@ -1,5 +1,6 @@
-import { AssetBudget, MaintenanceActual, MaintenanceAbnormalLog, MaintenanceLogSheet, MaintenanceSchedule, StandardMaintenance, StandardMaintenanceCheck, StandardMaintenanceDetail, Asset, AssetCategory, User, sequelize } from "../../models/index.js";
+import { AssetBudget, MaintenanceActual, MaintenanceAbnormalLog, MaintenanceLogSheet, MaintenanceSchedule, StandardMaintenance, StandardMaintenanceCheck, StandardMaintenanceDetail, Asset, AssetCategory, User, YearlyStandardMaintenance, sequelize } from "../../models/index.js";
 import { Op } from "sequelize";
+import { generateCheckboxDates } from "../cmms/maintenanceSchedule/checkboxGenerator.js";
 
 const currency = (value) => `Rp ${Number(value || 0).toLocaleString('id-ID')}`;
 const compactMonthKey = (date) => String(date).slice(0, 7);
@@ -20,6 +21,36 @@ const HARDWARE_SUMMARY_TABS = [
   { key: "gathering", label: "GATHERING", aliases: ["gathering", "teleconference", "wireless display transmiter", "camera pocket", "podcast"] },
   { key: "scanner", label: "SCANNER", aliases: ["scanner", "scanners", "barcode scanner", "bht"] },
   { key: "accessdoor", label: "ACCESSDOOR", aliases: ["accessdoor", "acces door", "access door", "reader", "fingerprint", "face attendance", "suprema"] },
+];
+const MAINTENANCE_CATEGORY_GROUPS = [
+  { key: "hardware", label: "Hardware", aliases: ["hardware"] },
+  { key: "software-hardware", label: "Software Hardware", aliases: ["software hardware", "software hw", "software_hw", "software-hardware"] },
+  { key: "application", label: "Application", aliases: ["application", "applications", "app"] },
+  {
+    key: "cyber-network",
+    label: "Cyber Network",
+    aliases: [
+      "network",
+      "networking",
+      "network cyber",
+      "network_cyber",
+      "network-cyber",
+      "network & cybersecurity",
+      "network and cybersecurity",
+      "network cybersecurity",
+      "cyber",
+      "cyber security",
+      "cyber-security",
+      "cybersecurity",
+      "cyber network",
+    ],
+  },
+];
+const SCHEDULE_MONITORING_STATUSES = [
+  { key: "upcoming", label: "Upcoming" },
+  { key: "due", label: "Due / Remaining" },
+  { key: "completed", label: "Completed" },
+  { key: "overdue", label: "Overdue" },
 ];
 
 const buildAuditKmcSectionRow = (key, item, rows = []) => {
@@ -112,6 +143,25 @@ const buildAuditKmcSections = (budgetRows = []) => {
 
 function normalizeText(value = "") {
   return String(value || "").trim().toLowerCase();
+}
+
+function normalizeCategoryToken(value = "") {
+  return normalizeText(value)
+    .replace(/[_/&()-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isMaintenanceCategoryAliasMatch(value = "", alias = "") {
+  const normalizedValue = normalizeCategoryToken(value);
+  const normalizedAlias = normalizeCategoryToken(alias);
+
+  if (!normalizedValue || !normalizedAlias) return false;
+  return (
+    normalizedValue === normalizedAlias ||
+    normalizedValue.includes(normalizedAlias) ||
+    normalizedAlias.includes(normalizedValue)
+  );
 }
 
 function getScheduleDeviceLabel(schedule, fallbackStandard = null) {
@@ -213,6 +263,520 @@ function resolveAssetSummaryCategory(assetRow = {}) {
   }
 
   return resolveFallbackAssetType(assetRow);
+}
+
+function resolveMaintenanceCategoryGroup(assetRow = {}) {
+  const categoryChain = getAssetCategoryChainNames(assetRow).map(normalizeText).filter(Boolean);
+  const valuesToCheck = [assetRow?.asset_name, assetRow?.hostname, ...categoryChain]
+    .map(normalizeText)
+    .filter(Boolean);
+  const childCategoryName = categoryChain[0] || "";
+  const parentCategoryName = categoryChain[1] || "";
+  const matchesAlias = (group) =>
+    group.aliases.some((alias) => {
+      const normalizedAlias = normalizeText(alias);
+      return valuesToCheck.some(
+        (value) =>
+          value === normalizedAlias ||
+          value.includes(normalizedAlias) ||
+          normalizedAlias.includes(value)
+      );
+    });
+
+  let matchedGroup = null;
+
+  if (childCategoryName === "application") {
+    matchedGroup = MAINTENANCE_CATEGORY_GROUPS.find((group) => group.key === "application") || null;
+  } else if (childCategoryName === "software hardware") {
+    matchedGroup = MAINTENANCE_CATEGORY_GROUPS.find((group) => group.key === "software-hardware") || null;
+  } else if (parentCategoryName === "application") {
+    matchedGroup = MAINTENANCE_CATEGORY_GROUPS.find((group) => group.key === "application") || null;
+  }
+
+  if (!matchedGroup) {
+    matchedGroup = MAINTENANCE_CATEGORY_GROUPS.find(matchesAlias);
+  }
+
+  return matchedGroup || MAINTENANCE_CATEGORY_GROUPS[0];
+}
+
+function resolveAbnormalCategoryGroup(abnormalLog = {}) {
+  const standardFromCheck =
+    abnormalLog?.actual?.check?.standard_maintenance_detail?.standard_maintenance || null;
+  const standardFromSchedule = abnormalLog?.actual?.schedule?.StandardMaintenance || null;
+  const assetRow = abnormalLog?.actual?.schedule?.asset || {};
+
+  return (
+    resolveMaintenanceCategoryGroupFromStandard(standardFromCheck) ||
+    resolveMaintenanceCategoryGroupFromStandard(standardFromSchedule) ||
+    resolveMaintenanceCategoryGroup(assetRow)
+  );
+}
+
+function resolveMaintenanceCategoryGroupFromName(value = "") {
+  if (!normalizeCategoryToken(value)) return null;
+
+  return (
+    MAINTENANCE_CATEGORY_GROUPS.find((group) =>
+      group.aliases.some((alias) => {
+        return isMaintenanceCategoryAliasMatch(value, alias);
+      })
+    ) || null
+  );
+}
+
+function resolveMaintenanceCategoryGroupFromStandard(standardMaintenance = {}) {
+  const primaryCategory = String(standardMaintenance?.kategori || "").trim();
+  const normalizedPrimaryCategory = normalizeCategoryToken(primaryCategory);
+
+  if (normalizedPrimaryCategory) {
+    const matchedPrimaryGroup = resolveMaintenanceCategoryGroupFromName(primaryCategory);
+    if (matchedPrimaryGroup) return matchedPrimaryGroup;
+
+    if (normalizedPrimaryCategory === "software") {
+      return MAINTENANCE_CATEGORY_GROUPS.find((group) => group.key === "application") || null;
+    }
+
+    return null;
+  }
+
+  const fallbackCandidates = [
+    standardMaintenance?.subKategori,
+    standardMaintenance?.namaPerangkat,
+    standardMaintenance?.tipePerangkat,
+    standardMaintenance?.subPerangkat,
+  ];
+
+  for (const candidate of fallbackCandidates) {
+    const matchedGroup = resolveMaintenanceCategoryGroupFromName(candidate);
+    if (matchedGroup) return matchedGroup;
+  }
+
+  return null;
+}
+
+function toDateOrNull(value) {
+  if (!value) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function startOfDay(date) {
+  const normalized = new Date(date);
+  normalized.setHours(0, 0, 0, 0);
+  return normalized;
+}
+
+function endOfDay(date) {
+  const normalized = new Date(date);
+  normalized.setHours(23, 59, 59, 999);
+  return normalized;
+}
+
+function formatDateYmd(value) {
+  const parsed = toDateOrNull(value);
+  if (!parsed) return "-";
+  return parsed.toISOString().slice(0, 10);
+}
+
+function resolveSummaryMonthFilter(query = {}) {
+  const now = new Date();
+  const parsedMonth = Number.parseInt(query?.month, 10);
+  const parsedYear = Number.parseInt(query?.year, 10);
+  const month = Number.isInteger(parsedMonth) && parsedMonth >= 1 && parsedMonth <= 12 ? parsedMonth : now.getMonth() + 1;
+  const year = Number.isInteger(parsedYear) && parsedYear >= 2000 && parsedYear <= 9999 ? parsedYear : now.getFullYear();
+
+  const monthStart = startOfDay(new Date(year, month - 1, 1));
+  const monthEnd = endOfDay(new Date(year, month, 0));
+
+  return {
+    month,
+    year,
+    monthStart,
+    monthEnd,
+  };
+}
+
+function resolveScheduleAnchorDates(schedule, today = new Date()) {
+  const directStart = toDateOrNull(schedule?.next_maintenance_date);
+  const directEnd = toDateOrNull(schedule?.next_maintenance_end_date);
+  if (directStart || directEnd) {
+    return {
+      startDate: directStart || directEnd,
+      endDate: directEnd || directStart,
+    };
+  }
+
+  const actuals = Array.isArray(schedule?.actuals) ? schedule.actuals : [];
+  const sortedActuals = actuals
+    .map((actual) => ({
+      ...actual,
+      parsedDate: toDateOrNull(actual?.tanggal),
+    }))
+    .filter((actual) => actual.parsedDate)
+    .sort((left, right) => left.parsedDate - right.parsedDate);
+
+  if (sortedActuals.length === 0) {
+    return { startDate: null, endDate: null };
+  }
+
+  const todayStart = startOfDay(today);
+  const pendingActuals = sortedActuals.filter((actual) => normalizeText(actual?.status) !== "actual");
+  const nextPlannedActual =
+    pendingActuals.find((actual) => startOfDay(actual.parsedDate) >= todayStart) || null;
+  const latestPendingActual =
+    [...pendingActuals].reverse().find((actual) => startOfDay(actual.parsedDate) < todayStart) || null;
+  const latestCompletedActual =
+    [...sortedActuals]
+      .reverse()
+      .find((actual) => normalizeText(actual?.status) === "actual") || null;
+  const fallbackActual =
+    sortedActuals.find(
+      (actual) => startOfDay(actual.parsedDate) >= todayStart
+    ) ||
+    nextPlannedActual ||
+    latestPendingActual ||
+    latestCompletedActual ||
+    sortedActuals[0];
+
+  return {
+    startDate: fallbackActual?.parsedDate || null,
+    endDate: fallbackActual?.parsedDate || null,
+    hasPendingActual: pendingActuals.length > 0,
+    latestCompletedActualDate: latestCompletedActual?.parsedDate || null,
+  };
+}
+
+function resolveScheduleMonitoringStatus(schedule, today = new Date()) {
+  const todayStart = startOfDay(today);
+  const { startDate, endDate, hasPendingActual, latestCompletedActualDate } = resolveScheduleAnchorDates(schedule, today);
+  const endDateRaw = endDate || startDate;
+
+  if (!hasPendingActual && latestCompletedActualDate) return "completed";
+  if (!startDate && !endDateRaw) return latestCompletedActualDate ? "completed" : "upcoming";
+
+  const startWindow = startDate ? startOfDay(startDate) : startOfDay(endDateRaw);
+  const endWindow = endDateRaw ? endOfDay(endDateRaw) : endOfDay(startDate);
+
+  if (todayStart > endWindow) return "overdue";
+  if (todayStart >= startWindow && todayStart <= endWindow) return "due";
+  return "upcoming";
+}
+
+function isScheduleWithinPeriod(scheduleRow, periodKey, today = new Date()) {
+  const todayStart = startOfDay(today);
+  const scheduleStart = toDateOrNull(scheduleRow?.nextMaintenanceDate);
+  const scheduleEnd = toDateOrNull(scheduleRow?.nextMaintenanceEndDate) || scheduleStart;
+  const anchor = scheduleEnd || scheduleStart;
+
+  if (!anchor) return periodKey === "this-month";
+
+  const anchorStart = startOfDay(anchor);
+  if (periodKey === "next-7-days") {
+    const next7 = new Date(todayStart);
+    next7.setDate(next7.getDate() + 7);
+    return anchorStart >= todayStart && anchorStart <= endOfDay(next7);
+  }
+
+  if (periodKey === "next-30-days") {
+    const next30 = new Date(todayStart);
+    next30.setDate(next30.getDate() + 30);
+    return anchorStart >= todayStart && anchorStart <= endOfDay(next30);
+  }
+
+  return (
+    anchorStart.getFullYear() === todayStart.getFullYear() &&
+    anchorStart.getMonth() === todayStart.getMonth()
+  );
+}
+
+function buildMaintenanceScheduleSummary(schedules = [], today = new Date()) {
+  const summary = {
+    upcoming: 0,
+    due: 0,
+    completed: 0,
+    overdue: 0,
+  };
+
+  const rows = schedules.map((schedule) => {
+    const statusKey = resolveScheduleMonitoringStatus(schedule, today);
+    const standardMaintenance = schedule?.StandardMaintenance || null;
+    const categoryGroup =
+      resolveMaintenanceCategoryGroupFromStandard(standardMaintenance) ||
+      resolveMaintenanceCategoryGroup(schedule?.asset || {});
+    const { startDate, endDate } = resolveScheduleAnchorDates(schedule, today);
+    summary[statusKey] += 1;
+
+    return {
+      key: schedule.id,
+      asset: getScheduleDeviceLabel(schedule),
+      categoryGroup: categoryGroup.key,
+      categoryLabel: categoryGroup.label,
+      sourceCategory: standardMaintenance?.kategori || "-",
+      sourceSubCategory: standardMaintenance?.subKategori || "-",
+      periodik: schedule.periodik || schedule.periodik_type || "-",
+      dueDate: formatDateYmd(startDate),
+      endDate: formatDateYmd(endDate),
+      statusKey,
+      statusLabel:
+        SCHEDULE_MONITORING_STATUSES.find((item) => item.key === statusKey)?.label || statusKey,
+      scheduleStatus: schedule.status || "ACTIVE",
+    };
+  });
+
+  return { summary, rows };
+}
+
+function resolveActualMonitoringStatus(actual, today = new Date()) {
+  const actualDate = toDateOrNull(actual?.tanggal);
+  if (!actualDate) return "upcoming";
+
+  if (normalizeText(actual?.status) === "actual") return "completed";
+
+  const todayStart = startOfDay(today);
+  const dateStart = startOfDay(actualDate);
+  if (dateStart < todayStart) return "overdue";
+  if (dateStart.getTime() === todayStart.getTime()) return "due";
+  return "upcoming";
+}
+
+function buildMaintenanceActualSummary(actualRows = [], today = new Date()) {
+  const summary = {
+    upcoming: 0,
+    due: 0,
+    completed: 0,
+    overdue: 0,
+  };
+
+  const rows = actualRows.map((actual) => {
+    const standardMaintenance =
+      actual?.check?.standard_maintenance_detail?.standard_maintenance || null;
+    const categoryGroup =
+      resolveMaintenanceCategoryGroupFromStandard(standardMaintenance) ||
+      resolveMaintenanceCategoryGroup(actual?.schedule?.asset || {});
+    const statusKey = resolveActualMonitoringStatus(actual, today);
+    summary[statusKey] += 1;
+
+    return {
+      key: actual.id || `${actual.check_id}-${actual.tanggal}`,
+      asset: getScheduleDeviceLabel(actual?.schedule, standardMaintenance) || standardMaintenance?.namaPerangkat || "-",
+      categoryGroup: categoryGroup.key,
+      categoryLabel: categoryGroup.label,
+      sourceCategory: standardMaintenance?.kategori || "-",
+      sourceSubCategory: standardMaintenance?.subKategori || "-",
+      periodik: actual?.check?.periodik || actual?.schedule?.periodik || actual?.schedule?.periodik_type || "-",
+      dueDate: formatDateYmd(actual?.tanggal),
+      endDate: formatDateYmd(actual?.tanggal),
+      statusKey,
+      statusLabel:
+        SCHEDULE_MONITORING_STATUSES.find((item) => item.key === statusKey)?.label || statusKey,
+      actualStatus: actual?.status || "PLAN",
+    };
+  });
+
+  return { summary, rows };
+}
+
+function buildMaintenanceStatusCategorySummary(scheduleRows = []) {
+  const summaryMap = new Map(
+    MAINTENANCE_CATEGORY_GROUPS.map((group) => [
+      group.key,
+      {
+        key: group.key,
+        category: group.label,
+        total: 0,
+        completed: 0,
+        upcoming: 0,
+        due: 0,
+        overdue: 0,
+      },
+    ])
+  );
+
+  (Array.isArray(scheduleRows) ? scheduleRows : []).forEach((row) => {
+    const bucket = summaryMap.get(row?.categoryGroup) || summaryMap.get("hardware");
+    bucket.total += 1;
+
+    if (row?.statusKey === "completed") bucket.completed += 1;
+    else if (row?.statusKey === "due") bucket.due += 1;
+    else if (row?.statusKey === "overdue") bucket.overdue += 1;
+    else bucket.upcoming += 1;
+  });
+
+  return Array.from(summaryMap.values());
+}
+
+function getMaintenanceMonthlyCategoryMap() {
+  return {
+    hardware: ["HARDWARE", "Hardware"],
+    "software-hardware": ["SOFTWARE_HW", "Software"],
+    application: ["APPLICATION", "Software"],
+    "cyber-network": ["NETWORK_CYBER", "Networking", "Cyber"],
+  };
+}
+
+function normalizeMaintenanceMonthlyStatus({ actualStatus, targetDate, today = new Date() }) {
+  const normalizedActualStatus = normalizeText(actualStatus);
+  if (normalizedActualStatus === "actual") return "completed";
+
+  const todayStart = startOfDay(today);
+  const targetStart = startOfDay(targetDate);
+
+  if (targetStart.getTime() < todayStart.getTime()) return "overdue";
+  if (targetStart.getTime() === todayStart.getTime()) return "due";
+  return "upcoming";
+}
+
+async function buildMaintenanceMonthlyStatusSummary({ month, year, today = new Date() }) {
+  const emptySummary = { upcoming: 0, due: 0, completed: 0, overdue: 0 };
+  const yearlyStandard = await YearlyStandardMaintenance.findOne({
+    where: { tahun: Number(year) },
+    attributes: ["id", "tahun"],
+  });
+
+  if (!yearlyStandard) {
+    return { summary: { ...emptySummary }, rows: [] };
+  }
+
+  const standards = await StandardMaintenance.findAll({
+    where: { yearly_standard_id: yearlyStandard.id },
+    attributes: ["id", "kategori", "subKategori", "namaPerangkat", "tipePerangkat", "subPerangkat"],
+    include: [
+      {
+        model: StandardMaintenanceDetail,
+        as: "details",
+        attributes: ["id", "fungsi", "deskripsi"],
+        include: [
+          {
+            model: StandardMaintenanceCheck,
+            as: "pengecekanList",
+            attributes: ["id", "pengecekan", "standard", "periodik"],
+          },
+        ],
+      },
+    ],
+    order: [["id", "ASC"]],
+  });
+
+  const allChecks = [];
+  standards.forEach((standard) => {
+    (standard.details || []).forEach((detail) => {
+      (detail.pengecekanList || []).forEach((check) => {
+        allChecks.push({
+          standard,
+          detail,
+          check,
+        });
+      });
+    });
+  });
+
+  const monthKey = String(month).padStart(2, "0");
+  const monthStart = `${year}-${monthKey}-01`;
+  const monthEnd = endOfDay(new Date(year, month, 0)).toISOString().slice(0, 10);
+  const allCheckIds = allChecks.map((entry) => entry.check.id);
+
+  const existingActuals = allCheckIds.length
+    ? await MaintenanceActual.findAll({
+        where: {
+          check_id: { [Op.in]: allCheckIds },
+          tanggal: { [Op.between]: [monthStart, monthEnd] },
+        },
+        attributes: ["id", "check_id", "tanggal", "status", "legend"],
+        raw: true,
+      })
+    : [];
+
+  const actualByCheckAndDate = new Map();
+  existingActuals.forEach((actual) => {
+    actualByCheckAndDate.set(`${actual.check_id}__${actual.tanggal}`, actual);
+  });
+
+  const categoryMap = getMaintenanceMonthlyCategoryMap();
+  const rows = [];
+  const summary = { ...emptySummary };
+
+  for (const entry of allChecks) {
+    const standardCategory = String(entry.standard?.kategori || "").trim();
+    const periodik = entry.check?.periodik;
+    if (!periodik) continue;
+
+    const allDates = await generateCheckboxDates(Number(year), periodik);
+    const monthDates = allDates.filter((date) => date.startsWith(`${year}-${monthKey}`));
+    if (!monthDates.length) continue;
+
+    const matchingGroups = Object.entries(categoryMap)
+      .filter(([, aliases]) => aliases.includes(standardCategory))
+      .map(([groupKey]) => groupKey);
+
+    if (!matchingGroups.length) continue;
+
+    for (const date of monthDates) {
+      const actual = actualByCheckAndDate.get(`${entry.check.id}__${date}`) || null;
+      const statusKey = normalizeMaintenanceMonthlyStatus({
+        actualStatus: actual?.status,
+        targetDate: date,
+        today,
+      });
+
+      matchingGroups.forEach((groupKey) => {
+        summary[statusKey] += 1;
+        rows.push({
+          key: actual?.id || `${groupKey}-${entry.check.id}-${date}`,
+          asset: entry.standard?.namaPerangkat || entry.standard?.subPerangkat || entry.standard?.subKategori || "-",
+          categoryGroup: groupKey,
+          categoryLabel:
+            MAINTENANCE_CATEGORY_GROUPS.find((group) => group.key === groupKey)?.label || groupKey,
+          sourceCategory: entry.standard?.kategori || "-",
+          sourceSubCategory: entry.standard?.subKategori || "-",
+          periodik,
+          dueDate: date,
+          endDate: date,
+          statusKey,
+          statusLabel:
+            SCHEDULE_MONITORING_STATUSES.find((item) => item.key === statusKey)?.label || statusKey,
+          actualStatus: actual?.status || "PLAN",
+          checkId: entry.check.id,
+          actualId: actual?.id || null,
+        });
+      });
+    }
+  }
+
+  return { summary, rows };
+}
+
+function buildMaintenanceAbnormalCategorySummary(abnormalLogs = []) {
+  const summaryMap = new Map(
+    MAINTENANCE_CATEGORY_GROUPS.map((group) => [
+      group.key,
+      {
+        key: group.key,
+        category: group.label,
+        total: 0,
+        open: 0,
+        inProgress: 0,
+        resolved: 0,
+      },
+    ])
+  );
+
+  abnormalLogs.forEach((abnormalLog) => {
+    const group = resolveAbnormalCategoryGroup(abnormalLog);
+    const bucket = summaryMap.get(group.key);
+    const status = normalizeText(abnormalLog?.status_temuan);
+
+    bucket.total += 1;
+    if (status === "open") {
+      bucket.open += 1;
+    } else if (status === "resolved") {
+      bucket.resolved += 1;
+    } else {
+      bucket.inProgress += 1;
+    }
+  });
+
+  return Array.from(summaryMap.values());
 }
 
 function buildAssetCategorySummary(assetRows = [], totalAsset = 0) {
@@ -490,6 +1054,82 @@ export const getDashboardSummary = async (req, res) => {
       },
     ];
 
+    const today = new Date();
+    const monthStart = startOfDay(new Date(today.getFullYear(), today.getMonth(), 1));
+    const next30 = endOfDay(new Date(today.getFullYear(), today.getMonth(), today.getDate() + 30));
+    const maintenanceActualRows = await MaintenanceActual.findAll({
+      where: {
+        tanggal: {
+          [Op.between]: [
+            monthStart.toISOString().slice(0, 10),
+            next30.toISOString().slice(0, 10),
+          ],
+        },
+      },
+      order: [["tanggal", "ASC"]],
+      include: [
+        {
+          model: MaintenanceSchedule,
+          as: "schedule",
+          required: false,
+          attributes: ["id", "asset_id", "periodik", "periodik_type"],
+          include: [
+            {
+              model: Asset,
+              as: "asset",
+              required: false,
+              attributes: ["asset_id", "asset_name", "asset_code", "hostname", "category_id"],
+              include: [
+                {
+                  model: AssetCategory,
+                  as: "category",
+                  required: false,
+                  attributes: ["category_id", "category_name", "parent_id"],
+                  include: [
+                    {
+                      model: AssetCategory,
+                      as: "parent",
+                      required: false,
+                      attributes: ["category_id", "category_name"],
+                    },
+                  ],
+                },
+              ],
+            },
+            {
+              model: StandardMaintenance,
+              as: "StandardMaintenance",
+              required: false,
+              attributes: ["namaPerangkat", "subPerangkat", "kategori", "subKategori"],
+            },
+          ],
+        },
+        {
+          model: StandardMaintenanceCheck,
+          as: "check",
+          required: false,
+          attributes: ["id", "pengecekan", "standard", "periodik"],
+          include: [
+            {
+              model: StandardMaintenanceDetail,
+              as: "standard_maintenance_detail",
+              required: false,
+              attributes: ["id", "fungsi", "deskripsi"],
+              include: [
+                {
+                  model: StandardMaintenance,
+                  as: "standard_maintenance",
+                  required: false,
+                  attributes: ["id", "kategori", "subKategori", "namaPerangkat", "tipePerangkat", "subPerangkat"],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    const maintenanceScheduleSummary = buildMaintenanceActualSummary(maintenanceActualRows, today);
+
     // Maintenance Actuals
     const totalActuals = await MaintenanceActual.count();
     const doneActuals = await MaintenanceActual.count({ where: { status: 'ACTUAL' } });
@@ -529,6 +1169,74 @@ export const getDashboardSummary = async (req, res) => {
     const openAbnormals = await MaintenanceAbnormalLog.count({ where: { status_temuan: 'OPEN' } });
     const inProgressAbnormals = await MaintenanceAbnormalLog.count({ where: { status_temuan: { [Op.notIn]: ['OPEN', 'RESOLVED'] } } });
     const resolvedAbnormals = await MaintenanceAbnormalLog.count({ where: { status_temuan: 'RESOLVED' } });
+    const allAbnormalCategories = await MaintenanceAbnormalLog.findAll({
+      attributes: ["id", "status_temuan"],
+      include: [
+        {
+          model: MaintenanceActual,
+          as: "actual",
+          attributes: ["id"],
+          include: [
+            {
+              model: MaintenanceSchedule,
+              as: "schedule",
+              attributes: ["id"],
+              include: [
+                {
+                  model: StandardMaintenance,
+                  as: "StandardMaintenance",
+                  required: false,
+                  attributes: ["id", "kategori", "subKategori", "namaPerangkat", "tipePerangkat", "subPerangkat"],
+                },
+                {
+                  model: Asset,
+                  as: "asset",
+                  attributes: ["asset_id", "asset_name", "hostname", "category_id"],
+                  include: [
+                    {
+                      model: AssetCategory,
+                      as: "category",
+                      required: false,
+                      attributes: ["category_id", "category_name", "parent_id"],
+                      include: [
+                        {
+                          model: AssetCategory,
+                          as: "parent",
+                          required: false,
+                          attributes: ["category_id", "category_name"],
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+            {
+              model: StandardMaintenanceCheck,
+              as: "check",
+              required: false,
+              attributes: ["id"],
+              include: [
+                {
+                  model: StandardMaintenanceDetail,
+                  as: "standard_maintenance_detail",
+                  required: false,
+                  attributes: ["id"],
+                  include: [
+                    {
+                      model: StandardMaintenance,
+                      as: "standard_maintenance",
+                      required: false,
+                      attributes: ["id", "kategori", "subKategori", "namaPerangkat", "tipePerangkat", "subPerangkat"],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
 
     const recentAbnormals = await MaintenanceAbnormalLog.findAll({
       limit: 10,
@@ -545,9 +1253,29 @@ export const getDashboardSummary = async (req, res) => {
                 {
                   model: StandardMaintenance,
                   as: 'StandardMaintenance',
-                  attributes: ['namaPerangkat', 'subPerangkat'],
+                  attributes: ['id', 'kategori', 'subKategori', 'namaPerangkat', 'tipePerangkat', 'subPerangkat'],
                 },
-                { model: Asset, as: 'asset', attributes: ['asset_name', 'asset_code', 'hostname'] }
+                {
+                  model: Asset,
+                  as: 'asset',
+                  attributes: ['asset_id', 'asset_name', 'asset_code', 'hostname', 'category_id'],
+                  include: [
+                    {
+                      model: AssetCategory,
+                      as: 'category',
+                      required: false,
+                      attributes: ['category_id', 'category_name', 'parent_id'],
+                      include: [
+                        {
+                          model: AssetCategory,
+                          as: 'parent',
+                          required: false,
+                          attributes: ['category_id', 'category_name'],
+                        },
+                      ],
+                    },
+                  ],
+                }
               ]
             },
             {
@@ -564,7 +1292,7 @@ export const getDashboardSummary = async (req, res) => {
                       model: StandardMaintenance,
                       as: 'standard_maintenance',
                       required: false,
-                      attributes: ['namaPerangkat', 'subPerangkat'],
+                      attributes: ['id', 'kategori', 'subKategori', 'namaPerangkat', 'tipePerangkat', 'subPerangkat'],
                     }
                   ]
                 }
@@ -576,15 +1304,26 @@ export const getDashboardSummary = async (req, res) => {
       ],
     });
 
-    const formattedAbnormals = recentAbnormals.map(a => ({
-      key: a.id,
-      deskripsi: a.deskripsi_kerusakan || '-',
-      tindakan: a.tindakan || '-',
-      status: a.status_temuan,
-      asset: getActualDeviceLabel(a.actual),
-      resolvedBy: a.resolver?.full_name || '-',
-      resolvedAt: a.resolved_at ? new Date(a.resolved_at).toLocaleDateString() : '-',
-    }));
+    const formattedAbnormals = recentAbnormals.map((a) => {
+      const categoryGroup = resolveAbnormalCategoryGroup(a);
+      const standardMaintenance =
+        a?.actual?.check?.standard_maintenance_detail?.standard_maintenance ||
+        a?.actual?.schedule?.StandardMaintenance ||
+        null;
+      return {
+        key: a.id,
+        deskripsi: a.deskripsi_kerusakan || '-',
+        tindakan: a.tindakan || '-',
+        status: a.status_temuan,
+        asset: getActualDeviceLabel(a.actual),
+        categoryGroup: categoryGroup.key,
+        categoryLabel: categoryGroup.label,
+        sourceCategory: standardMaintenance?.kategori || '-',
+        sourceSubCategory: standardMaintenance?.subKategori || '-',
+        resolvedBy: a.resolver?.full_name || '-',
+        resolvedAt: a.resolved_at ? new Date(a.resolved_at).toLocaleDateString() : '-',
+      };
+    });
 
     return res.status(200).json({
       success: true,
@@ -624,11 +1363,16 @@ export const getDashboardSummary = async (req, res) => {
           pending: pendingActuals,
           rows: formattedActuals,
         },
+        maintenanceSchedules: {
+          summary: maintenanceScheduleSummary.summary,
+          rows: maintenanceScheduleSummary.rows,
+        },
         maintenanceAbnormals: {
           total: totalAbnormals,
           open: openAbnormals,
           inProgress: inProgressAbnormals,
           resolved: resolvedAbnormals,
+          byCategory: buildMaintenanceAbnormalCategorySummary(allAbnormalCategories),
           rows: formattedAbnormals,
         },
       }
@@ -641,6 +1385,8 @@ export const getDashboardSummary = async (req, res) => {
 
 export const getFullSummary = async (req, res) => {
   try {
+    const { month, year, monthStart, monthEnd } = resolveSummaryMonthFilter(req.query);
+
     // 1. Asset Summary
     const assetStatusSummary = await getUnifiedAssetStatusSummary();
     const totalAsset = assetStatusSummary.total;
@@ -681,23 +1427,141 @@ export const getFullSummary = async (req, res) => {
     const bookValue = budgetRows.reduce((sum, item) => sum + Number(item.budget || item.purchase_price || item.price_pengajuan || item.initial_plan || 0), 0);
 
     // 3. Maintenance Summary
-    const totalLogsheets = await MaintenanceLogSheet.count();
-    const approvedLogsheets = await MaintenanceLogSheet.count({ where: { status_temuan: 'RESOLVED' } });
+    const totalLogsheets = await MaintenanceLogSheet.count({
+      where: {
+        tanggal_temuan: {
+          [Op.between]: [monthStart.toISOString().slice(0, 10), monthEnd.toISOString().slice(0, 10)],
+        },
+      },
+    });
+    const approvedLogsheets = await MaintenanceLogSheet.count({
+      where: {
+        status_temuan: 'RESOLVED',
+        tanggal_temuan: {
+          [Op.between]: [monthStart.toISOString().slice(0, 10), monthEnd.toISOString().slice(0, 10)],
+        },
+      },
+    });
     const pendingLogsheets = totalLogsheets - approvedLogsheets;
 
-    const totalActuals = await MaintenanceActual.count();
-    const doneActuals = await MaintenanceActual.count({ where: { status: 'ACTUAL' } });
-    const pendingActuals = await MaintenanceActual.count({ where: { status: 'PLAN' } });
+    const totalActuals = await MaintenanceActual.count({
+      where: {
+        tanggal: {
+          [Op.between]: [monthStart.toISOString().slice(0, 10), monthEnd.toISOString().slice(0, 10)],
+        },
+      },
+    });
+    const doneActuals = await MaintenanceActual.count({
+      where: {
+        status: 'ACTUAL',
+        tanggal: {
+          [Op.between]: [monthStart.toISOString().slice(0, 10), monthEnd.toISOString().slice(0, 10)],
+        },
+      },
+    });
+    const pendingActuals = await MaintenanceActual.count({
+      where: {
+        status: 'PLAN',
+        tanggal: {
+          [Op.between]: [monthStart.toISOString().slice(0, 10), monthEnd.toISOString().slice(0, 10)],
+        },
+      },
+    });
+    const today = new Date();
+    const maintenanceStatusSummary = await buildMaintenanceMonthlyStatusSummary({
+      month,
+      year,
+      today,
+    });
 
-    const totalAbnormals = await MaintenanceAbnormalLog.count();
-    const openAbnormals = await MaintenanceAbnormalLog.count({ where: { status_temuan: 'OPEN' } });
-    const inProgressAbnormals = await MaintenanceAbnormalLog.count({ where: { status_temuan: { [Op.notIn]: ['OPEN', 'RESOLVED'] } } });
-    const resolvedAbnormals = await MaintenanceAbnormalLog.count({ where: { status_temuan: 'RESOLVED' } });
+    const allAbnormalCategories = await MaintenanceAbnormalLog.findAll({
+      attributes: ["id", "status_temuan"],
+      include: [
+        {
+          model: MaintenanceActual,
+          as: "actual",
+          required: true,
+          attributes: ["id", "tanggal"],
+          where: {
+            tanggal: {
+              [Op.between]: [monthStart.toISOString().slice(0, 10), monthEnd.toISOString().slice(0, 10)],
+            },
+          },
+          include: [
+            {
+              model: MaintenanceSchedule,
+              as: "schedule",
+              attributes: ["id"],
+              include: [
+                {
+                  model: StandardMaintenance,
+                  as: "StandardMaintenance",
+                  required: false,
+                  attributes: ["id", "kategori", "subKategori", "namaPerangkat", "tipePerangkat", "subPerangkat"],
+                },
+                {
+                  model: Asset,
+                  as: "asset",
+                  attributes: ["asset_id", "asset_name", "hostname", "category_id"],
+                  include: [
+                    {
+                      model: AssetCategory,
+                      as: "category",
+                      required: false,
+                      attributes: ["category_id", "category_name", "parent_id"],
+                      include: [
+                        {
+                          model: AssetCategory,
+                          as: "parent",
+                          required: false,
+                          attributes: ["category_id", "category_name"],
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+            {
+              model: StandardMaintenanceCheck,
+              as: "check",
+              required: false,
+              attributes: ["id"],
+              include: [
+                {
+                  model: StandardMaintenanceDetail,
+                  as: "standard_maintenance_detail",
+                  required: false,
+                  attributes: ["id"],
+                  include: [
+                    {
+                      model: StandardMaintenance,
+                      as: "standard_maintenance",
+                      required: false,
+                      attributes: ["id", "kategori", "subKategori", "namaPerangkat", "tipePerangkat", "subPerangkat"],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    const totalAbnormals = allAbnormalCategories.length;
+    const openAbnormals = allAbnormalCategories.filter((row) => normalizeText(row?.status_temuan) === "open").length;
+    const resolvedAbnormals = allAbnormalCategories.filter((row) => normalizeText(row?.status_temuan) === "resolved").length;
+    const inProgressAbnormals = Math.max(totalAbnormals - openAbnormals - resolvedAbnormals, 0);
 
     // Latest Logsheets for table
     const latestLogs = await MaintenanceLogSheet.findAll({
       limit: 5,
       order: [['tanggal_temuan', 'DESC']],
+      where: {
+        tanggal_temuan: {
+          [Op.between]: [monthStart.toISOString().slice(0, 10), monthEnd.toISOString().slice(0, 10)],
+        },
+      },
       include: [
         {
           model: MaintenanceSchedule,
@@ -718,6 +1582,11 @@ export const getFullSummary = async (req, res) => {
     const latestActuals = await MaintenanceActual.findAll({
       limit: 5,
       order: [['tanggal', 'DESC']],
+      where: {
+        tanggal: {
+          [Op.between]: [monthStart.toISOString().slice(0, 10), monthEnd.toISOString().slice(0, 10)],
+        },
+      },
       include: [
         {
           model: MaintenanceSchedule,
@@ -743,6 +1612,12 @@ export const getFullSummary = async (req, res) => {
         {
           model: MaintenanceActual,
           as: 'actual',
+          required: true,
+          where: {
+            tanggal: {
+              [Op.between]: [monthStart.toISOString().slice(0, 10), monthEnd.toISOString().slice(0, 10)],
+            },
+          },
           include: [
             {
               model: MaintenanceSchedule,
@@ -751,9 +1626,29 @@ export const getFullSummary = async (req, res) => {
                 {
                   model: StandardMaintenance,
                   as: 'StandardMaintenance',
-                  attributes: ['namaPerangkat', 'subPerangkat'],
+                  attributes: ['id', 'kategori', 'subKategori', 'namaPerangkat', 'tipePerangkat', 'subPerangkat'],
                 },
-                { model: Asset, as: 'asset', attributes: ['asset_name', 'hostname'] }
+                {
+                  model: Asset,
+                  as: 'asset',
+                  attributes: ['asset_id', 'asset_name', 'hostname', 'category_id'],
+                  include: [
+                    {
+                      model: AssetCategory,
+                      as: 'category',
+                      required: false,
+                      attributes: ['category_id', 'category_name', 'parent_id'],
+                      include: [
+                        {
+                          model: AssetCategory,
+                          as: 'parent',
+                          required: false,
+                          attributes: ['category_id', 'category_name'],
+                        },
+                      ],
+                    },
+                  ],
+                }
               ]
             },
             {
@@ -770,7 +1665,7 @@ export const getFullSummary = async (req, res) => {
                       model: StandardMaintenance,
                       as: 'standard_maintenance',
                       required: false,
-                      attributes: ['namaPerangkat', 'subPerangkat'],
+                      attributes: ['id', 'kategori', 'subKategori', 'namaPerangkat', 'tipePerangkat', 'subPerangkat'],
                     }
                   ]
                 }
@@ -823,6 +1718,15 @@ export const getFullSummary = async (req, res) => {
           overview: budgetProgressSummary.overview,
         },
         maintenance: {
+          filter: {
+            month,
+            year,
+          },
+          schedules: {
+            summary: maintenanceStatusSummary.summary,
+            byCategory: buildMaintenanceStatusCategorySummary(maintenanceStatusSummary.rows),
+            rows: maintenanceStatusSummary.rows,
+          },
           logsheets: {
             total: totalLogsheets || dummyMaintenanceLogs.length,
             approved: approvedLogsheets || 1,
@@ -862,14 +1766,26 @@ export const getFullSummary = async (req, res) => {
             open: openAbnormals || 0,
             inProgress: inProgressAbnormals || 0,
             resolved: resolvedAbnormals || 0,
-            latestRows: latestAbnormals.map(a => ({
-              key: a.id,
-              deskripsi: a.deskripsi_kerusakan || '-',
-              tindakan: a.tindakan || '-',
-              status: a.status_temuan,
-              asset: getActualDeviceLabel(a.actual),
-              resolvedBy: a.resolver?.full_name || '-',
-            })),
+            byCategory: buildMaintenanceAbnormalCategorySummary(allAbnormalCategories),
+            latestRows: latestAbnormals.map((a) => {
+              const categoryGroup = resolveAbnormalCategoryGroup(a);
+              const standardMaintenance =
+                a?.actual?.check?.standard_maintenance_detail?.standard_maintenance ||
+                a?.actual?.schedule?.StandardMaintenance ||
+                null;
+              return {
+                key: a.id,
+                deskripsi: a.deskripsi_kerusakan || '-',
+                tindakan: a.tindakan || '-',
+                status: a.status_temuan,
+                asset: getActualDeviceLabel(a.actual),
+                categoryGroup: categoryGroup.key,
+                categoryLabel: categoryGroup.label,
+                sourceCategory: standardMaintenance?.kategori || '-',
+                sourceSubCategory: standardMaintenance?.subKategori || '-',
+                resolvedBy: a.resolver?.full_name || '-',
+              };
+            }),
           },
         }
       }
