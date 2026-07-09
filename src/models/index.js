@@ -21,6 +21,7 @@ import AssetBudgetModel from "./itam/assetBudgetModel.js";
 import AssetBudgetScheduleItemModel from "./itam/assetBudgetScheduleItemModel.js";
 import OperationalBudgetModel from "./itam/operationalBudgetModel.js";
 import OperationalBudgetScheduleItemModel from "./itam/operationalBudgetScheduleItemModel.js";
+import PhishingMonitoringLogModel from "./itam/phishingMonitoringLogModel.js";
 
 import TicketModel from "./itsm/ticketModel.js";
 
@@ -60,6 +61,7 @@ const AssetBudget = AssetBudgetModel(sequelize);
 const AssetBudgetScheduleItem = AssetBudgetScheduleItemModel(sequelize);
 const OperationalBudget = OperationalBudgetModel(sequelize);
 const OperationalBudgetScheduleItem = OperationalBudgetScheduleItemModel(sequelize);
+const PhishingMonitoringLog = PhishingMonitoringLogModel(sequelize);
 
 const Ticket = TicketModel(sequelize);
 const WorkOrder = WorkOrderModel(sequelize);
@@ -387,6 +389,16 @@ AuditLog.belongsTo(User, {
  foreignKey: "user_id",
 });
 
+Asset.hasMany(PhishingMonitoringLog, {
+ foreignKey: "asset_id",
+ as: "phishingLogs",
+});
+
+PhishingMonitoringLog.belongsTo(Asset, {
+ foreignKey: "asset_id",
+ as: "asset",
+});
+
 YearlyStandardMaintenance.hasMany(StandardMaintenance, {
   foreignKey: "yearly_standard_id",
   as: "perangkatList",
@@ -478,6 +490,7 @@ export {
  AssetBudgetScheduleItem,
  OperationalBudget,
  OperationalBudgetScheduleItem,
+ PhishingMonitoringLog,
  AuditLog,
  Holiday,
 };
@@ -514,6 +527,7 @@ export default {
  AssetBudgetScheduleItem,
  OperationalBudget,
  OperationalBudgetScheduleItem,
+ PhishingMonitoringLog,
  AuditLog,
  Holiday,
 };

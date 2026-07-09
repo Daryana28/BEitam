@@ -22,6 +22,7 @@ import assetBudgetScheduleRoutes from "./itam/assetBudgetSchedule/assetBudgetSch
 import operationalBudgetRoutes from "./itam/operationalBudget/operationalBudgetRoute.js";
 import operationalBudgetScheduleRoutes from "./itam/operationalBudgetSchedule/operationalBudgetScheduleRoute.js";
 import assetLifecycleRoutes from "./itam/assetLifecycle/assetLifecycleRoute.js";
+import phishingMonitoringRoutes from "./itam/phishingMonitoring/phishingMonitoringRoute.js";
 
 import userRoutes from "./user/userRoute.js";
 
@@ -140,6 +141,11 @@ router.use(
 router.use(
     "/dashboard",
     dashboardRoutes
+);
+
+router.use(
+    "/phishing-monitoring",
+    phishingMonitoringRoutes
 );
 
 export default router;
