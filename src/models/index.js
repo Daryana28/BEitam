@@ -38,6 +38,7 @@ import MaintenanceAbnormalLogModel from "./cmms/maintenanceAbnormalLogModel.js";
 import AuditLogModel from "./shared/auditLogModel.js";
 import AssetLifecycleModel from "./legacy/assetLifecycleModel.js";
 import HolidayModel from "./shared/holidayModel.js";
+import GuideImageModel from "./shared/guideImageModel.js";
 
 const Company = CompanyModel(sequelize);
 const Department = DepartmentModel(sequelize);
@@ -77,6 +78,7 @@ const MaintenanceAbnormalLog = MaintenanceAbnormalLogModel(sequelize);
 const AuditLog = AuditLogModel(sequelize);
 const AssetLifecycle = AssetLifecycleModel(sequelize);
 const Holiday = HolidayModel(sequelize);
+const GuideImage = GuideImageModel(sequelize);
 
 /* RELATION */
 
@@ -493,6 +495,7 @@ export {
  PhishingMonitoringLog,
  AuditLog,
  Holiday,
+ GuideImage,
 };
 
 export default {
@@ -530,4 +533,5 @@ export default {
  PhishingMonitoringLog,
  AuditLog,
  Holiday,
+ GuideImage,
 };

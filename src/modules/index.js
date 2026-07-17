@@ -29,6 +29,7 @@ import userRoutes from "./user/userRoute.js";
 import inventoryRoutes from "./itam/inventory/inventoryRoute.js";
 import holidayRoutes from "./cmms/holiday/holidayRoutes.js";
 import dashboardRoutes from "./dashboard/dashboardRoute.js";
+import guideImageRoutes from "./shared/guideImages/guideImageRoute.js";
 
 const router =
     express.Router();
@@ -146,6 +147,11 @@ router.use(
 router.use(
     "/phishing-monitoring",
     phishingMonitoringRoutes
+);
+
+router.use(
+    "/guide-images",
+    guideImageRoutes
 );
 
 export default router;
