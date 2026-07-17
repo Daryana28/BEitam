@@ -152,6 +152,31 @@ function normalizeCategoryToken(value = "") {
     .trim();
 }
 
+function normalizeDateKey(value) {
+  if (!value) return "";
+  const raw = String(value).trim();
+  if (!raw) return "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return "";
+  return parsed.toISOString().slice(0, 10);
+}
+
+async function resolveDashboardPlannedDates(year, check = {}, fallbackPeriodik = "") {
+  const savedDates = Array.isArray(check?.planned_dates)
+    ? check.planned_dates.map(normalizeDateKey).filter(Boolean)
+    : [];
+
+  if (savedDates.length > 0) {
+    return [...new Set(savedDates)].sort();
+  }
+
+  const periodikString = String(check?.periodik || fallbackPeriodik || "").trim();
+  if (!periodikString) return [];
+  return generateCheckboxDates(year, periodikString);
+}
+
 function isMaintenanceCategoryAliasMatch(value = "", alias = "") {
   const normalizedValue = normalizeCategoryToken(value);
   const normalizedAlias = normalizeCategoryToken(alias);
@@ -328,18 +353,6 @@ function resolveMaintenanceCategoryGroupFromName(value = "") {
 function resolveMaintenanceCategoryGroupFromStandard(standardMaintenance = {}) {
   const primaryCategory = String(standardMaintenance?.kategori || "").trim();
   const normalizedPrimaryCategory = normalizeCategoryToken(primaryCategory);
-
-  if (normalizedPrimaryCategory) {
-    const matchedPrimaryGroup = resolveMaintenanceCategoryGroupFromName(primaryCategory);
-    if (matchedPrimaryGroup) return matchedPrimaryGroup;
-
-    if (normalizedPrimaryCategory === "software") {
-      return MAINTENANCE_CATEGORY_GROUPS.find((group) => group.key === "application") || null;
-    }
-
-    return null;
-  }
-
   const fallbackCandidates = [
     standardMaintenance?.subKategori,
     standardMaintenance?.namaPerangkat,
@@ -350,6 +363,17 @@ function resolveMaintenanceCategoryGroupFromStandard(standardMaintenance = {}) {
   for (const candidate of fallbackCandidates) {
     const matchedGroup = resolveMaintenanceCategoryGroupFromName(candidate);
     if (matchedGroup) return matchedGroup;
+  }
+
+  if (normalizedPrimaryCategory) {
+    const matchedPrimaryGroup = resolveMaintenanceCategoryGroupFromName(primaryCategory);
+    if (matchedPrimaryGroup) return matchedPrimaryGroup;
+
+    if (normalizedPrimaryCategory === "software") {
+      return MAINTENANCE_CATEGORY_GROUPS.find((group) => group.key === "application") || null;
+    }
+
+    return null;
   }
 
   return null;
@@ -606,15 +630,6 @@ function buildMaintenanceStatusCategorySummary(scheduleRows = []) {
   return Array.from(summaryMap.values());
 }
 
-function getMaintenanceMonthlyCategoryMap() {
-  return {
-    hardware: ["HARDWARE", "Hardware"],
-    "software-hardware": ["SOFTWARE_HW", "Software"],
-    application: ["APPLICATION", "Software"],
-    "cyber-network": ["NETWORK_CYBER", "Networking", "Cyber"],
-  };
-}
-
 function normalizeMaintenanceMonthlyStatus({ actualStatus, targetDate, today = new Date() }) {
   const normalizedActualStatus = normalizeText(actualStatus);
   if (normalizedActualStatus === "actual") return "completed";
@@ -650,7 +665,7 @@ async function buildMaintenanceMonthlyStatusSummary({ month, year, today = new D
           {
             model: StandardMaintenanceCheck,
             as: "pengecekanList",
-            attributes: ["id", "pengecekan", "standard", "periodik"],
+            attributes: ["id", "pengecekan", "standard", "periodik", "planned_dates"],
           },
         ],
       },
@@ -692,24 +707,17 @@ async function buildMaintenanceMonthlyStatusSummary({ month, year, today = new D
     actualByCheckAndDate.set(`${actual.check_id}__${actual.tanggal}`, actual);
   });
 
-  const categoryMap = getMaintenanceMonthlyCategoryMap();
   const rows = [];
   const summary = { ...emptySummary };
 
   for (const entry of allChecks) {
-    const standardCategory = String(entry.standard?.kategori || "").trim();
+    const categoryGroup = resolveMaintenanceCategoryGroupFromStandard(entry.standard);
     const periodik = entry.check?.periodik;
-    if (!periodik) continue;
+    if (!periodik || !categoryGroup) continue;
 
-    const allDates = await generateCheckboxDates(Number(year), periodik);
+    const allDates = await resolveDashboardPlannedDates(Number(year), entry.check, periodik);
     const monthDates = allDates.filter((date) => date.startsWith(`${year}-${monthKey}`));
     if (!monthDates.length) continue;
-
-    const matchingGroups = Object.entries(categoryMap)
-      .filter(([, aliases]) => aliases.includes(standardCategory))
-      .map(([groupKey]) => groupKey);
-
-    if (!matchingGroups.length) continue;
 
     for (const date of monthDates) {
       const actual = actualByCheckAndDate.get(`${entry.check.id}__${date}`) || null;
@@ -719,26 +727,23 @@ async function buildMaintenanceMonthlyStatusSummary({ month, year, today = new D
         today,
       });
 
-      matchingGroups.forEach((groupKey) => {
-        summary[statusKey] += 1;
-        rows.push({
-          key: actual?.id || `${groupKey}-${entry.check.id}-${date}`,
-          asset: entry.standard?.namaPerangkat || entry.standard?.subPerangkat || entry.standard?.subKategori || "-",
-          categoryGroup: groupKey,
-          categoryLabel:
-            MAINTENANCE_CATEGORY_GROUPS.find((group) => group.key === groupKey)?.label || groupKey,
-          sourceCategory: entry.standard?.kategori || "-",
-          sourceSubCategory: entry.standard?.subKategori || "-",
-          periodik,
-          dueDate: date,
-          endDate: date,
-          statusKey,
-          statusLabel:
-            SCHEDULE_MONITORING_STATUSES.find((item) => item.key === statusKey)?.label || statusKey,
-          actualStatus: actual?.status || "PLAN",
-          checkId: entry.check.id,
-          actualId: actual?.id || null,
-        });
+      summary[statusKey] += 1;
+      rows.push({
+        key: actual?.id || `${categoryGroup.key}-${entry.check.id}-${date}`,
+        asset: entry.standard?.namaPerangkat || entry.standard?.subPerangkat || entry.standard?.subKategori || "-",
+        categoryGroup: categoryGroup.key,
+        categoryLabel: categoryGroup.label,
+        sourceCategory: entry.standard?.kategori || "-",
+        sourceSubCategory: entry.standard?.subKategori || "-",
+        periodik,
+        dueDate: date,
+        endDate: date,
+        statusKey,
+        statusLabel:
+          SCHEDULE_MONITORING_STATUSES.find((item) => item.key === statusKey)?.label || statusKey,
+        actualStatus: actual?.status || "PLAN",
+        checkId: entry.check.id,
+        actualId: actual?.id || null,
       });
     }
   }
