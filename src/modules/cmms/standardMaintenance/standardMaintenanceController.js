@@ -129,6 +129,121 @@ const normalizeDateKey = (value) => {
   return String(value).slice(0, 10);
 };
 
+const normalizePlannedDates = (plannedDates = []) =>
+  [...new Set((Array.isArray(plannedDates) ? plannedDates : []).map(normalizeDateKey).filter(Boolean))]
+    .sort();
+
+const getMonthBucket = (dateStr) => {
+  const parsed = dayjs(dateStr);
+  if (!parsed.isValid()) return "";
+  return parsed.format("YYYY-MM");
+};
+
+const getPeriodBucketConfig = (periodik) => {
+  const normalized = String(periodik || "").trim().toUpperCase();
+
+  if (normalized === "DAILY") {
+    return {
+      label: "1 tanggal per hari",
+      maxPerBucket: 1,
+      getBucket: (dateStr) => dayjs(dateStr).isValid() ? dayjs(dateStr).format("YYYY-MM-DD") : "",
+    };
+  }
+
+  if (normalized === "1X/MINGGU" || normalized === "1X/W") {
+    return {
+      label: "1 tanggal per minggu",
+      maxPerBucket: 1,
+      getBucket: (dateStr) => {
+        const parsed = dayjs(dateStr);
+        return parsed.isValid() ? parsed.startOf("isoWeek").format("YYYY-MM-DD") : "";
+      },
+    };
+  }
+
+  if (normalized === "2X/MINGGU" || normalized === "2X/W") {
+    return {
+      label: "2 tanggal per minggu",
+      maxPerBucket: 2,
+      getBucket: (dateStr) => {
+        const parsed = dayjs(dateStr);
+        return parsed.isValid() ? parsed.startOf("isoWeek").format("YYYY-MM-DD") : "";
+      },
+    };
+  }
+
+  if (normalized === "1X/BULAN" || normalized === "1X/M") {
+    return {
+      label: "1 tanggal per bulan",
+      maxPerBucket: 1,
+      getBucket: getMonthBucket,
+    };
+  }
+
+  if (normalized === "3X/BULAN" || normalized.includes("3 BULAN")) {
+    return {
+      label: "1 tanggal per 3 bulan",
+      maxPerBucket: 1,
+      getBucket: (dateStr) => {
+        const parsed = dayjs(dateStr);
+        if (!parsed.isValid()) return "";
+        return `${parsed.year()}-Q${Math.floor(parsed.month() / 3) + 1}`;
+      },
+    };
+  }
+
+  if (normalized === "6X/BULAN" || normalized.includes("6 BULAN")) {
+    return {
+      label: "1 tanggal per 6 bulan",
+      maxPerBucket: 1,
+      getBucket: (dateStr) => {
+        const parsed = dayjs(dateStr);
+        if (!parsed.isValid()) return "";
+        return `${parsed.year()}-H${parsed.month() < 6 ? 1 : 2}`;
+      },
+    };
+  }
+
+  if (normalized === "1X/TAHUN" || normalized.includes("TAHUN")) {
+    return {
+      label: "1 tanggal per tahun",
+      maxPerBucket: 1,
+      getBucket: (dateStr) => dayjs(dateStr).isValid() ? dayjs(dateStr).format("YYYY") : "",
+    };
+  }
+
+  return null;
+};
+
+const getPlannedDatesValidationError = (periodik, plannedDates = []) => {
+  const normalizedDates = normalizePlannedDates(plannedDates);
+  const bucketConfig = getPeriodBucketConfig(periodik);
+  if (!bucketConfig) return "";
+
+  const buckets = new Map();
+  for (const dateStr of normalizedDates) {
+    const bucket = bucketConfig.getBucket(dateStr);
+    if (!bucket) continue;
+
+    if (!buckets.has(bucket)) {
+      buckets.set(bucket, [dateStr]);
+      continue;
+    }
+
+    const bucketDates = buckets.get(bucket);
+    if (bucketDates.length >= Number(bucketConfig.maxPerBucket || 1)) {
+      const formattedDates = [...bucketDates, dateStr]
+        .map((value) => dayjs(value).format("DD/MM/YYYY"))
+        .join(", ");
+      return `Periodik ${periodik} hanya boleh ${bucketConfig.label}. Bentrok pada ${formattedDates}.`;
+    }
+
+    bucketDates.push(dateStr);
+  }
+
+  return "";
+};
+
 export const createStandardMaintenance = async (req, res) => {
   const transaction = await sequelize.transaction();
   try {
@@ -382,6 +497,13 @@ export const upsertFlatStandardMaintenance = async (req, res) => {
       fungsi, deskripsi,
       pengecekan, standard, periodik, bagian, metode, alat, planned_dates
     } = req.body;
+    const normalizedPlannedDates = normalizePlannedDates(planned_dates);
+    const plannedDatesValidationError = getPlannedDatesValidationError(periodik, normalizedPlannedDates);
+
+    if (plannedDatesValidationError) {
+      await transaction.rollback();
+      return res.status(400).json({ success: false, message: plannedDatesValidationError });
+    }
 
     let sm = await StandardMaintenance.findOne({
       where: { 
@@ -433,7 +555,7 @@ export const upsertFlatStandardMaintenance = async (req, res) => {
           await smCheck.update({
             standard_maintenance_detail_id: smDetail.id,
             pengecekan, standard, periodik, bagian, metode, alat,
-            ...(planned_dates !== undefined ? { planned_dates } : {})
+            ...(planned_dates !== undefined ? { planned_dates: normalizedPlannedDates } : {})
           }, { transaction });
         }
       }
@@ -442,7 +564,7 @@ export const upsertFlatStandardMaintenance = async (req, res) => {
         smCheck = await StandardMaintenanceCheck.create({
           standard_maintenance_detail_id: smDetail.id,
           pengecekan, standard, periodik, bagian, metode, alat,
-          planned_dates: Array.isArray(planned_dates) ? planned_dates : []
+          planned_dates: normalizedPlannedDates
         }, { transaction });
       }
     }
@@ -467,6 +589,29 @@ export const deleteFlatStandardMaintenance = async (req, res) => {
     }
 
     const detailId = smCheck.standard_maintenance_detail_id;
+
+    const actualRows = await MaintenanceActual.findAll({
+      where: { check_id },
+      attributes: ["id"],
+      transaction,
+    });
+    const actualIds = actualRows.map((row) => row.id);
+
+    if (actualIds.length > 0) {
+      await MaintenanceAbnormalLog.destroy({
+        where: { actual_id: { [Op.in]: actualIds } },
+        transaction,
+      });
+      await MaintenanceLogSheet.destroy({
+        where: { actual_id: { [Op.in]: actualIds } },
+        transaction,
+      });
+      await MaintenanceActual.destroy({
+        where: { check_id },
+        transaction,
+      });
+    }
+
     await smCheck.destroy({ transaction });
 
     const remainingChecks = await StandardMaintenanceCheck.count({ where: { standard_maintenance_detail_id: detailId }, transaction });
@@ -767,6 +912,17 @@ export const saveAndGenerateSchedule = async (req, res) => {
     const checkCache = new Map();
     for (const [index, checkItem] of checks.entries()) {
       currentStage = `saving check row ${index + 1}`;
+      const normalizedPlannedDates = normalizePlannedDates(checkItem.planned_dates);
+      const plannedDatesValidationError = getPlannedDatesValidationError(checkItem.periodik, normalizedPlannedDates);
+
+      if (plannedDatesValidationError) {
+        await transaction.rollback();
+        return res.status(400).json({
+          success: false,
+          message: `Baris ${index + 1} (${checkItem.pengecekan || "-"}) tidak valid: ${plannedDatesValidationError}`,
+        });
+      }
+
       const dbKategori = kategori.toUpperCase();
       const dbSubKategori = checkItem.subKategori || '-';
       const dbNamaPerangkat = checkItem.namaPerangkat || '-';
@@ -870,7 +1026,7 @@ export const saveAndGenerateSchedule = async (req, res) => {
           bagian: checkItem.bagian || '',
           metode: checkItem.metode || '',
           alat: checkItem.alat || '',
-          planned_dates: Array.isArray(checkItem.planned_dates) ? checkItem.planned_dates : []
+          planned_dates: normalizedPlannedDates
         }, { transaction });
       } else {
         await smCheck.update({
@@ -881,7 +1037,7 @@ export const saveAndGenerateSchedule = async (req, res) => {
           bagian: checkItem.bagian || '',
           metode: checkItem.metode || '',
           alat: checkItem.alat || '',
-          planned_dates: Array.isArray(checkItem.planned_dates) ? checkItem.planned_dates : []
+          planned_dates: normalizedPlannedDates
         }, { transaction });
       }
       checkCache.set(`id:${smCheck.id}`, smCheck);
