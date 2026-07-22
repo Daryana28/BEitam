@@ -1287,6 +1287,7 @@ export const getDashboardSummary = async (req, res) => {
               model: StandardMaintenanceCheck,
               as: 'check',
               required: false,
+              attributes: ["id", "pengecekan", "standard", "periodik", "planned_dates"],
               include: [
                 {
                   model: StandardMaintenanceDetail,
@@ -1660,6 +1661,7 @@ export const getFullSummary = async (req, res) => {
               model: StandardMaintenanceCheck,
               as: 'check',
               required: false,
+              attributes: ["id", "pengecekan", "standard", "periodik", "planned_dates"],
               include: [
                 {
                   model: StandardMaintenanceDetail,

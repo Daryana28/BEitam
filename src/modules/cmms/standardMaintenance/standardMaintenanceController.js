@@ -129,6 +129,79 @@ const normalizeDateKey = (value) => {
   return String(value).slice(0, 10);
 };
 
+const STANDARD_MAINTENANCE_CHECK_BASE_ATTRIBUTES = [
+  "id",
+  "standard_maintenance_detail_id",
+  "pengecekan",
+  "standard",
+  "periodik",
+  "bagian",
+  "metode",
+  "alat",
+  "planned_dates",
+  "created_at",
+  "updated_at",
+];
+
+let standardMaintenanceCheckCycleColumnAvailable = null;
+
+const hasStandardMaintenanceCheckCycleColumn = async (transaction) => {
+  if (standardMaintenanceCheckCycleColumnAvailable !== null) {
+    return standardMaintenanceCheckCycleColumnAvailable;
+  }
+
+  const [rows] = await sequelize.query(
+    `
+      SELECT 1 AS is_available
+      FROM INFORMATION_SCHEMA.COLUMNS
+      WHERE TABLE_NAME = 'standard_maintenance_checks'
+        AND COLUMN_NAME = 'cycle_time_minutes'
+    `,
+    { transaction }
+  );
+
+  standardMaintenanceCheckCycleColumnAvailable = Array.isArray(rows) && rows.length > 0;
+
+  if (!standardMaintenanceCheckCycleColumnAvailable) {
+    await sequelize.query(
+      `
+        ALTER TABLE dbo.standard_maintenance_checks
+        ADD cycle_time_minutes INT NULL
+      `,
+      { transaction }
+    );
+    standardMaintenanceCheckCycleColumnAvailable = true;
+  }
+
+  return standardMaintenanceCheckCycleColumnAvailable;
+};
+
+const getStandardMaintenanceCheckAttributes = async (transaction) => {
+  const hasCycleColumn = await hasStandardMaintenanceCheckCycleColumn(transaction);
+  return hasCycleColumn
+    ? [...STANDARD_MAINTENANCE_CHECK_BASE_ATTRIBUTES, "cycle_time_minutes"]
+    : [...STANDARD_MAINTENANCE_CHECK_BASE_ATTRIBUTES];
+};
+
+const buildStandardMaintenanceCheckPayload = async (payload = {}, transaction) => {
+  const basePayload = {
+    standard_maintenance_detail_id: payload.standard_maintenance_detail_id,
+    pengecekan: payload.pengecekan,
+    standard: payload.standard,
+    periodik: payload.periodik,
+    bagian: payload.bagian,
+    metode: payload.metode,
+    alat: payload.alat,
+    ...(payload.planned_dates !== undefined ? { planned_dates: payload.planned_dates } : {}),
+  };
+
+  if (await hasStandardMaintenanceCheckCycleColumn(transaction)) {
+    basePayload.cycle_time_minutes = payload.cycle_time_minutes ?? null;
+  }
+
+  return basePayload;
+};
+
 const normalizePlannedDates = (plannedDates = []) =>
   [...new Set((Array.isArray(plannedDates) ? plannedDates : []).map(normalizeDateKey).filter(Boolean))]
     .sort();
@@ -248,6 +321,7 @@ export const createStandardMaintenance = async (req, res) => {
   const transaction = await sequelize.transaction();
   try {
     const payload = req.body;
+    const shouldPersistCycleTime = await hasStandardMaintenanceCheckCycleColumn(transaction);
 
     // 1. Create Parent (Device/Kategori)
     const standardMaintenance = await StandardMaintenance.create({
@@ -277,6 +351,7 @@ export const createStandardMaintenance = async (req, res) => {
             bagian: cek.bagian,
             metode: cek.metode,
             alat: cek.alat,
+            ...(shouldPersistCycleTime ? { cycle_time_minutes: cek.cycle_time_minutes ?? null } : {}),
           }));
 
           await StandardMaintenanceCheck.bulkCreate(checks, { transaction });
@@ -304,6 +379,7 @@ export const createStandardMaintenance = async (req, res) => {
 export const getAllStandardMaintenance = async (req, res) => {
   try {
     const { yearly_standard_id, kategori } = req.query;
+    const checkAttributes = await getStandardMaintenanceCheckAttributes();
     const whereClause = {};
     if (yearly_standard_id) {
       whereClause.yearly_standard_id = yearly_standard_id;
@@ -325,6 +401,7 @@ export const getAllStandardMaintenance = async (req, res) => {
             {
               model: StandardMaintenanceCheck,
               as: "pengecekanList",
+              attributes: checkAttributes,
             }
           ]
         }
@@ -495,7 +572,7 @@ export const upsertFlatStandardMaintenance = async (req, res) => {
       yearly_standard_id,
       kategori, subKategori, namaPerangkat, tipePerangkat, subPerangkat,
       fungsi, deskripsi,
-      pengecekan, standard, periodik, bagian, metode, alat, planned_dates
+      pengecekan, standard, periodik, cycle_time_minutes, bagian, metode, alat, planned_dates
     } = req.body;
     const normalizedPlannedDates = normalizePlannedDates(planned_dates);
     const plannedDatesValidationError = getPlannedDatesValidationError(periodik, normalizedPlannedDates);
@@ -550,22 +627,25 @@ export const upsertFlatStandardMaintenance = async (req, res) => {
     // ONLY process Check logic if pengecekan is actually provided!
     if (pengecekan !== undefined && pengecekan !== null && pengecekan !== "") {
       if (cekId) {
-        smCheck = await StandardMaintenanceCheck.findByPk(cekId, { transaction });
+        smCheck = await StandardMaintenanceCheck.findByPk(cekId, {
+          transaction,
+          attributes: await getStandardMaintenanceCheckAttributes(transaction),
+        });
         if (smCheck) {
-          await smCheck.update({
+          await smCheck.update(await buildStandardMaintenanceCheckPayload({
             standard_maintenance_detail_id: smDetail.id,
-            pengecekan, standard, periodik, bagian, metode, alat,
+            pengecekan, standard, periodik, cycle_time_minutes, bagian, metode, alat,
             ...(planned_dates !== undefined ? { planned_dates: normalizedPlannedDates } : {})
-          }, { transaction });
+          }, transaction), { transaction });
         }
       }
 
       if (!smCheck) {
-        smCheck = await StandardMaintenanceCheck.create({
+        smCheck = await StandardMaintenanceCheck.create(await buildStandardMaintenanceCheckPayload({
           standard_maintenance_detail_id: smDetail.id,
-          pengecekan, standard, periodik, bagian, metode, alat,
+          pengecekan, standard, periodik, cycle_time_minutes, bagian, metode, alat,
           planned_dates: normalizedPlannedDates
-        }, { transaction });
+        }, transaction), { transaction });
       }
     }
 
@@ -582,7 +662,10 @@ export const deleteFlatStandardMaintenance = async (req, res) => {
   const transaction = await sequelize.transaction();
   try {
     const { check_id } = req.params;
-    const smCheck = await StandardMaintenanceCheck.findByPk(check_id, { transaction });
+    const smCheck = await StandardMaintenanceCheck.findByPk(check_id, {
+      transaction,
+      attributes: await getStandardMaintenanceCheckAttributes(transaction),
+    });
     if (!smCheck) {
       await transaction.rollback();
       return res.status(404).json({ success: false, message: "Pengecekan tidak ditemukan" });
@@ -864,6 +947,7 @@ export const importStandardMaintenance = async (req, res) => {
           metode: group.metode || '',
           alat: group.alat || '',
           periodik,
+          cycle_time_minutes: null,
           planned_dates: []
         });
       }
@@ -997,7 +1081,10 @@ export const saveAndGenerateSchedule = async (req, res) => {
       // 3. Find or create StandardMaintenanceCheck
       let smCheck = null;
       if (checkItem.cekId) {
-        smCheck = checkCache.get(`id:${checkItem.cekId}`) || await StandardMaintenanceCheck.findByPk(checkItem.cekId, { transaction });
+        smCheck = checkCache.get(`id:${checkItem.cekId}`) || await StandardMaintenanceCheck.findByPk(checkItem.cekId, {
+          transaction,
+          attributes: await getStandardMaintenanceCheckAttributes(transaction),
+        });
       }
 
       if (!smCheck) {
@@ -1011,6 +1098,7 @@ export const saveAndGenerateSchedule = async (req, res) => {
               standard: checkItem.standard || '',
               bagian: checkItem.bagian || ''
             },
+            attributes: await getStandardMaintenanceCheckAttributes(transaction),
             transaction
           });
         }
@@ -1018,27 +1106,29 @@ export const saveAndGenerateSchedule = async (req, res) => {
       }
 
       if (!smCheck) {
-        smCheck = await StandardMaintenanceCheck.create({
+        smCheck = await StandardMaintenanceCheck.create(await buildStandardMaintenanceCheckPayload({
           standard_maintenance_detail_id: smDetail.id,
           pengecekan: checkItem.pengecekan,
           standard: checkItem.standard || '',
           periodik: checkItem.periodik || '1 Bulan',
+          cycle_time_minutes: checkItem.cycle_time_minutes ?? null,
           bagian: checkItem.bagian || '',
           metode: checkItem.metode || '',
           alat: checkItem.alat || '',
           planned_dates: normalizedPlannedDates
-        }, { transaction });
+        }, transaction), { transaction });
       } else {
-        await smCheck.update({
+        await smCheck.update(await buildStandardMaintenanceCheckPayload({
           standard_maintenance_detail_id: smDetail.id,
           pengecekan: checkItem.pengecekan,
           standard: checkItem.standard || '',
           periodik: checkItem.periodik || '1 Bulan',
+          cycle_time_minutes: checkItem.cycle_time_minutes ?? null,
           bagian: checkItem.bagian || '',
           metode: checkItem.metode || '',
           alat: checkItem.alat || '',
           planned_dates: normalizedPlannedDates
-        }, { transaction });
+        }, transaction), { transaction });
       }
       checkCache.set(`id:${smCheck.id}`, smCheck);
       savedCheckIds.push(smCheck.id);
@@ -1061,6 +1151,7 @@ export const saveAndGenerateSchedule = async (req, res) => {
       for (const detail of smDetails) {
         const smChecks = await StandardMaintenanceCheck.findAll({
           where: { standard_maintenance_detail_id: detail.id },
+          attributes: await getStandardMaintenanceCheckAttributes(transaction),
           transaction
         });
 

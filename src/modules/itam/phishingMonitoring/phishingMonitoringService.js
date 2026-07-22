@@ -5,7 +5,7 @@ import { Op } from "sequelize";
 
 import db from "../../../models/index.js";
 
-const { sequelize, Asset, PhishingMonitoringLog } = db;
+const { sequelize, Asset, PhishingMonitoringLog, User, Role, Department } = db;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -31,6 +31,94 @@ function isRootAdmin(req) {
  return roles.some((role) =>
   ["SUPERADMIN", "SUPERADMINISTRATOR"].includes(String(role).toUpperCase())
  );
+}
+
+function collectAccessMarkers(user = {}, rawRoles = []) {
+ const roleValues = Array.isArray(rawRoles)
+  ? rawRoles
+  : [];
+
+ const baseRoles = roleValues.map((role) => String(role).toUpperCase());
+ const markers = [
+  user?.username,
+  user?.full_name,
+  user?.email,
+  user?.Department?.department_name,
+ ]
+  .filter(Boolean)
+  .map((value) => String(value).toUpperCase());
+
+ return { baseRoles, markers };
+}
+
+function resolveEffectiveRoles(user = {}, rawRoles = []) {
+ const { baseRoles, markers } = collectAccessMarkers(user, rawRoles);
+ const effectiveRoles = new Set(baseRoles);
+
+ if (!effectiveRoles.has("MAINTENANCE_STAFF")) {
+  return Array.from(effectiveRoles);
+ }
+
+ const hasCyberMarker = markers.some((value) =>
+  /(CYBER|NETWORK|NETWORKING|NETWORL)/.test(value)
+ );
+ const hasAppMarker = markers.some((value) =>
+  /(APP|APPLICATION)/.test(value)
+ );
+ const hasHardwareMarker = markers.some((value) =>
+  /(HARDWARE|INFRA|DEVICE)/.test(value)
+ );
+ const hasSpecializedMarker =
+  hasCyberMarker || hasAppMarker || hasHardwareMarker;
+
+ if (hasCyberMarker) {
+  effectiveRoles.add("MTCCYBER");
+ }
+
+ if (hasAppMarker) {
+  effectiveRoles.add("MTCAPP");
+ }
+
+ if (hasHardwareMarker) {
+  effectiveRoles.add("MTCHARDWARE");
+ }
+
+ if (!hasSpecializedMarker) {
+  effectiveRoles.add("MTCHARDWARE");
+  effectiveRoles.add("MTCAPP");
+  effectiveRoles.add("MTCCYBER");
+ }
+
+ return Array.from(effectiveRoles);
+}
+
+async function canViewMonitoring(req) {
+ if (!req.user?.id) {
+  return false;
+ }
+
+ if (isRootAdmin(req)) {
+  return true;
+ }
+
+ const user = await User.findByPk(req.user.id, {
+  attributes: ["user_id", "username", "full_name", "email"],
+  include: [
+   { model: Role, as: "roles", attributes: ["role_name"], through: { attributes: [] } },
+   { model: Department, attributes: ["department_name"] },
+  ],
+ });
+
+ if (!user) {
+  return false;
+ }
+
+ const roleNames = Array.isArray(user.roles)
+  ? user.roles.map((role) => role?.role_name).filter(Boolean)
+  : [];
+ const effectiveRoles = resolveEffectiveRoles(user, roleNames);
+
+ return effectiveRoles.includes("MTCCYBER");
 }
 
 async function ensureTable() {
@@ -198,6 +286,7 @@ function buildTrackingUrl(req) {
 
 export default {
  isRootAdmin,
+ canViewMonitoring,
  ensureImageExists,
  recordClick,
  getMonitoringData,

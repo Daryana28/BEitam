@@ -81,6 +81,30 @@ function enrichAssetRow(row) {
  };
 }
 
+async function resolveTimelineHistoryAssetIds() {
+ const historyRows = await AssetLifecycle.findAll({
+  attributes: ["asset_id"],
+  where: {
+   [Op.or]: [
+    {
+     notes: {
+      [Op.like]: "TIMELINE_MANUAL_%",
+     },
+    },
+    {
+     action_name: "REPLACED",
+    },
+   ],
+  },
+  group: ["asset_id"],
+  raw: true,
+ });
+
+ return historyRows
+  .map((row) => String(row.asset_id || "").trim())
+  .filter(Boolean);
+}
+
 export default async function (
  query = {}
 ) {
@@ -260,27 +284,17 @@ const likeFields = [
  }
 
  if (
-  query.depreciation_history === true ||
-  query.depreciation_history === "true" ||
-  query.depreciation_history === 1 ||
-  query.depreciation_history === "1"
+  query.timeline_history === true ||
+  query.timeline_history === "true" ||
+  query.timeline_history === 1 ||
+  query.timeline_history === "1"
  ) {
-  const today = new Date().toISOString().slice(0, 10);
+  const timelineHistoryAssetIds = await resolveTimelineHistoryAssetIds();
 
   andConditions.push({
-   [Op.or]: [
-    {
-     depreciation_date: {
-      [Op.ne]: null,
-      [Op.lte]: today,
-     },
-    },
-    {
-     status: {
-      [Op.in]: ["DISPOSE", "DISPOSED"],
-     },
-    },
-   ],
+   asset_id: timelineHistoryAssetIds.length
+    ? { [Op.in]: timelineHistoryAssetIds }
+    : { [Op.eq]: null },
   });
  }
 

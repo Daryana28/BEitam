@@ -1,6 +1,6 @@
 import phishingMonitoringService from "./phishingMonitoringService.js";
 
-function ensureRootAdmin(req, res) {
+async function ensureMonitoringAccess(req, res) {
  if (!req.user) {
   res.status(401).json({
    success: false,
@@ -9,7 +9,7 @@ function ensureRootAdmin(req, res) {
   return false;
  }
 
- if (!phishingMonitoringService.isRootAdmin(req)) {
+ if (!(await phishingMonitoringService.canViewMonitoring(req))) {
   res.status(403).json({
    success: false,
    message: "Forbidden",
@@ -36,7 +36,7 @@ export async function viewTrackedImage(req, res) {
 
 export async function getMonitoringRecords(req, res) {
  try {
-  if (!ensureRootAdmin(req, res)) return;
+  if (!(await ensureMonitoringAccess(req, res))) return;
 
   const result = await phishingMonitoringService.getMonitoringData(req.query);
 

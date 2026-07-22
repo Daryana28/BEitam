@@ -25,6 +25,10 @@ export default (sequelize) =>
         type: DataTypes.STRING(100),
         allowNull: true,
       },
+      cycle_time_minutes: {
+        type: DataTypes.INTEGER,
+        allowNull: true,
+      },
       bagian: {
         type: DataTypes.STRING(255),
         allowNull: true,

@@ -111,6 +111,10 @@ function isSoftwareCategory(categoryId, categories = []) {
  return false;
 }
 
+function normalizeLookupValue(value = "") {
+ return String(value || "").trim();
+}
+
 export default async function (
  rows = [],
  req
@@ -452,17 +456,26 @@ export default async function (
     antivirus_status: softwareMode ? (softwareNextRenewal || null) : undefined,
    };
 
-   let exist = await Asset.findOne({
-    where: {
-     asset_code: payload.asset_code,
-    },
-    transaction: trx,
-   });
+   const normalizedHostname = normalizeLookupValue(payload.hostname);
+   const normalizedAssetCode = normalizeLookupValue(payload.asset_code);
 
-   if (!exist && payload.hostname) {
+   let exist = null;
+
+   if (normalizedHostname) {
     exist = await Asset.findOne({
      where: {
-      hostname: payload.hostname,
+      hostname: normalizedHostname,
+     },
+     transaction: trx,
+    });
+   }
+
+   // For CCTV and similar assets, hostname is the real unique key.
+   // Only fall back to asset_code when hostname is absent.
+   if (!exist && !normalizedHostname && normalizedAssetCode) {
+    exist = await Asset.findOne({
+     where: {
+      asset_code: normalizedAssetCode,
      },
      transaction: trx,
     });

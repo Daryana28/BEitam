@@ -87,6 +87,74 @@ const normalizeDateKey = (value) => {
   return parsed.isValid() ? parsed.format("YYYY-MM-DD") : "";
 };
 
+const STANDARD_MAINTENANCE_CHECK_BASE_ATTRIBUTES = [
+  "id",
+  "standard_maintenance_detail_id",
+  "pengecekan",
+  "standard",
+  "periodik",
+  "bagian",
+  "metode",
+  "alat",
+  "planned_dates",
+  "created_at",
+  "updated_at",
+];
+
+let standardMaintenanceCheckCycleColumnAvailable = null;
+
+const hasStandardMaintenanceCheckCycleColumn = async (transaction) => {
+  if (standardMaintenanceCheckCycleColumnAvailable !== null) {
+    return standardMaintenanceCheckCycleColumnAvailable;
+  }
+
+  const [rows] = await sequelize.query(
+    `
+      SELECT 1 AS is_available
+      FROM INFORMATION_SCHEMA.COLUMNS
+      WHERE TABLE_NAME = 'standard_maintenance_checks'
+        AND COLUMN_NAME = 'cycle_time_minutes'
+    `,
+    { transaction }
+  );
+
+  standardMaintenanceCheckCycleColumnAvailable = Array.isArray(rows) && rows.length > 0;
+
+  if (!standardMaintenanceCheckCycleColumnAvailable) {
+    await sequelize.query(
+      `
+        ALTER TABLE dbo.standard_maintenance_checks
+        ADD cycle_time_minutes INT NULL
+      `,
+      { transaction }
+    );
+    standardMaintenanceCheckCycleColumnAvailable = true;
+  }
+
+  return standardMaintenanceCheckCycleColumnAvailable;
+};
+
+const getStandardMaintenanceCheckAttributes = async (transaction) => {
+  const hasCycleColumn = await hasStandardMaintenanceCheckCycleColumn(transaction);
+  return hasCycleColumn
+    ? [...STANDARD_MAINTENANCE_CHECK_BASE_ATTRIBUTES, "cycle_time_minutes"]
+    : [...STANDARD_MAINTENANCE_CHECK_BASE_ATTRIBUTES];
+};
+
+const getResolvedPlannedDatesCacheKey = (year, checkId, fallbackPeriodik) =>
+  `${year}::${checkId || "no-check"}::${String(fallbackPeriodik || "").trim()}`;
+
+const getResolvedPlannedDatesWithCache = async (cache, year, check, fallbackPeriodik) => {
+  const cacheKey = getResolvedPlannedDatesCacheKey(year, check?.id, fallbackPeriodik);
+  if (cache.has(cacheKey)) {
+    return cache.get(cacheKey);
+  }
+
+  const dates = await resolvePlannedDates(year, check, fallbackPeriodik);
+  cache.set(cacheKey, dates);
+  return dates;
+};
+
 const resolvePlannedDates = async (year, check, fallbackPeriodik) => {
   const savedDates = Array.isArray(check?.planned_dates)
     ? check.planned_dates.map(normalizeDateKey).filter(Boolean)
@@ -105,6 +173,8 @@ const resolvePlannedDates = async (year, check, fallbackPeriodik) => {
 export const generateSchedule = async (req, res) => {
   try {
     const { yearly_standard_id } = req.body;
+    const checkAttributes = await getStandardMaintenanceCheckAttributes();
+    const plannedDatesCache = new Map();
 
     if (!yearly_standard_id) {
       return res.status(400).json({ success: false, message: "Yearly Standard ID is required" });
@@ -128,7 +198,8 @@ export const generateSchedule = async (req, res) => {
           include: [
             {
               model: StandardMaintenanceCheck,
-              as: "pengecekanList"
+              as: "pengecekanList",
+              attributes: checkAttributes,
             }
           ]
         }
@@ -191,10 +262,12 @@ export const generateSchedule = async (req, res) => {
 
       // Collect assets for this standard from pre-loaded map
       const assets = [];
+      const assetIdsSeen = new Set();
       for (const cid of categoryIds) {
         const catAssets = assetsByCategory.get(cid) || [];
         for (const a of catAssets) {
-          if (!assets.some(x => x.asset_id === a.asset_id)) {
+          if (!assetIdsSeen.has(a.asset_id)) {
+            assetIdsSeen.add(a.asset_id);
             assets.push(a);
           }
         }
@@ -270,7 +343,8 @@ export const generateSchedule = async (req, res) => {
         const targetKeys = new Set();
 
         for (const check of checks) {
-          const dates = await resolvePlannedDates(
+          const dates = await getResolvedPlannedDatesWithCache(
+            plannedDatesCache,
             yearlyStandard.tahun,
             check,
             check.periodik || targetSchedule.periodik || derivedPeriodik || "1 Bulan"
@@ -314,7 +388,8 @@ export const generateSchedule = async (req, res) => {
         const fallbackPeriodik = periodikByStandard.get(schedule.standard_maintenance_id) || "1 Bulan";
         const checks = sm?.details?.flatMap(d => d.pengecekanList || []) || [];
         for (const check of checks) {
-          const dates = await resolvePlannedDates(
+          const dates = await getResolvedPlannedDatesWithCache(
+            plannedDatesCache,
             yearlyStandard.tahun,
             check,
             check.periodik || schedule.periodik || fallbackPeriodik || "1 Bulan"
@@ -381,6 +456,7 @@ export const generateSchedule = async (req, res) => {
 export const getSchedules = async (req, res) => {
   try {
     const { yearly_standard_id } = req.query;
+    const checkAttributes = await getStandardMaintenanceCheckAttributes();
     const whereClause = {};
     if (yearly_standard_id) whereClause.yearly_standard_id = yearly_standard_id;
 
@@ -402,7 +478,8 @@ export const getSchedules = async (req, res) => {
               include: [
                 {
                   model: StandardMaintenanceCheck,
-                  as: "pengecekanList"
+                  as: "pengecekanList",
+                  attributes: checkAttributes,
                 }
               ]
             }
@@ -578,9 +655,12 @@ export const generateCheckboxes = async (req, res) => {
     }
 
     let createdCount = 0;
+    const checkAttributes = await getStandardMaintenanceCheckAttributes(transaction);
+    const plannedDatesCache = new Map();
 
     for (const schedule of schedules) {
       const checks = await StandardMaintenanceCheck.findAll({
+        attributes: checkAttributes,
         include: {
           model: StandardMaintenanceDetail,
           where: { standard_maintenance_id: schedule.standard_maintenance_id }
@@ -590,7 +670,8 @@ export const generateCheckboxes = async (req, res) => {
       const actualRecords = [];
 
       for (const check of checks) {
-        const dates = await resolvePlannedDates(
+        const dates = await getResolvedPlannedDatesWithCache(
+          plannedDatesCache,
           year,
           check,
           check.periodik || schedule.periodik || "1 Bulan"
@@ -676,6 +757,7 @@ export const getScheduleCheckboxes = async (req, res) => {
   try {
     const { id } = req.params;
     const { month } = req.query;
+    const checkAttributes = await getStandardMaintenanceCheckAttributes();
 
     const schedule = await MaintenanceSchedule.findByPk(id, {
       include: [{ model: YearlyStandardMaintenance }]
@@ -699,6 +781,7 @@ export const getScheduleCheckboxes = async (req, res) => {
         {
           model: StandardMaintenanceCheck,
           as: "check",
+          attributes: checkAttributes,
           include: {
             model: StandardMaintenanceDetail
           }
@@ -749,6 +832,8 @@ export const getScheduleCheckboxes = async (req, res) => {
 export const getMonthlyScheduleMatrix = async (req, res) => {
   try {
     const { year, month, category, yearly_standard_id } = req.query;
+    const checkAttributes = await getStandardMaintenanceCheckAttributes();
+    const plannedDatesCache = new Map();
 
     if (!year || !month) {
       return res.status(400).json({ success: false, message: "Year and Month parameters are required" });
@@ -794,7 +879,8 @@ export const getMonthlyScheduleMatrix = async (req, res) => {
           include: [
             {
               model: StandardMaintenanceCheck,
-              as: "pengecekanList"
+              as: "pengecekanList",
+              attributes: checkAttributes,
             }
           ]
         }
@@ -832,6 +918,7 @@ export const getMonthlyScheduleMatrix = async (req, res) => {
             pengecekan: check.pengecekan,
             standard: check.standard,
             periodik: check.periodik,
+            cycle_time_minutes: Number(check.cycle_time_minutes || 0),
             planned_dates: Array.isArray(check.planned_dates) ? check.planned_dates : [],
             checkboxes: []
           });
@@ -870,9 +957,10 @@ export const getMonthlyScheduleMatrix = async (req, res) => {
     const numYear = parseInt(year);
     for (const item of matrixData) {
       const checkActuals = actualsByCheckId.get(item.check_id) || new Map();
-      const allDates = await resolvePlannedDates(
+      const allDates = await getResolvedPlannedDatesWithCache(
+        plannedDatesCache,
         numYear,
-        { planned_dates: item.planned_dates, periodik: item.periodik },
+        { id: item.check_id, planned_dates: item.planned_dates, periodik: item.periodik },
         item.periodik
       );
 
