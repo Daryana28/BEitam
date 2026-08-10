@@ -230,12 +230,26 @@ async function getUnifiedAssetStatusSummary() {
   };
 }
 
+function getAssetCategoryChain(assetRow = {}) {
+  const chain = [];
+  let current = assetRow?.category || null;
+
+  while (current) {
+    const categoryName = String(current?.category_name || "").trim();
+    if (categoryName) {
+      chain.push({
+        id: current?.category_id ?? null,
+        name: categoryName,
+      });
+    }
+    current = current?.parent || null;
+  }
+
+  return chain;
+}
+
 function getAssetCategoryChainNames(assetRow = {}) {
-  const currentCategoryName = assetRow?.category?.category_name || "";
-  const parentCategoryName = assetRow?.category?.parent?.category_name || "";
-  return [currentCategoryName, parentCategoryName]
-    .map((item) => String(item || "").trim())
-    .filter(Boolean);
+  return getAssetCategoryChain(assetRow).map((item) => item.name);
 }
 
 function isSoftwareAssetSummaryRow(assetRow = {}) {
@@ -248,7 +262,12 @@ function resolveFallbackAssetType(assetRow = {}) {
   const chainNames = getAssetCategoryChainNames(assetRow);
   const nonGenericName = chainNames.find((name) => {
     const normalized = normalizeText(name);
-    return normalized && normalized !== "hardware" && normalized !== "software hardware" && normalized !== "lainnya";
+    return normalized
+      && normalized !== "hardware"
+      && normalized !== "software hardware"
+      && normalized !== "client"
+      && normalized !== "utama"
+      && normalized !== "lainnya";
   });
 
   if (nonGenericName) {
@@ -263,10 +282,24 @@ function resolveAssetSummaryCategory(assetRow = {}) {
     return "Software";
   }
 
+  const categoryChain = getAssetCategoryChainNames(assetRow);
+  const scopedLeafCategory = categoryChain.find((name) => {
+    const normalized = normalizeText(name);
+    return normalized
+      && normalized !== "hardware"
+      && normalized !== "software hardware"
+      && normalized !== "client"
+      && normalized !== "utama";
+  });
+
+  if (scopedLeafCategory) {
+    return String(scopedLeafCategory).trim().toUpperCase();
+  }
+
   const valuesToCheck = [
     assetRow?.asset_name,
     assetRow?.hostname,
-    ...getAssetCategoryChainNames(assetRow),
+    ...categoryChain,
   ]
     .map(normalizeText)
     .filter(Boolean);
@@ -288,6 +321,13 @@ function resolveAssetSummaryCategory(assetRow = {}) {
   }
 
   return resolveFallbackAssetType(assetRow);
+}
+
+function resolveHardwareAssetScope(assetRow = {}) {
+  const chainNames = getAssetCategoryChainNames(assetRow).map(normalizeText);
+  if (chainNames.includes("client")) return "client";
+  if (chainNames.includes("utama")) return "utama";
+  return null;
 }
 
 function resolveMaintenanceCategoryGroup(assetRow = {}) {
@@ -630,6 +670,62 @@ function buildMaintenanceStatusCategorySummary(scheduleRows = []) {
   return Array.from(summaryMap.values());
 }
 
+function resolveMaintenanceStatusPriority(statusKey = "") {
+  if (statusKey === "overdue") return 4;
+  if (statusKey === "due") return 3;
+  if (statusKey === "upcoming") return 2;
+  return 1;
+}
+
+function resolveMaintenanceSourceCategory(row = {}) {
+  return (
+    String(row?.sourceSubCategory || "").trim() ||
+    String(row?.sourceCategory || "").trim() ||
+    String(row?.asset || "").trim() ||
+    "-"
+  );
+}
+
+function buildMaintenanceStatusEntriesBySourceCategory(scheduleRows = []) {
+  const categoryMap = new Map();
+
+  (Array.isArray(scheduleRows) ? scheduleRows : []).forEach((row, index) => {
+    const groupKey = row?.categoryGroup || "hardware";
+    const sourceCategory = resolveMaintenanceSourceCategory(row);
+    const normalizedCategory = normalizeText(sourceCategory) || `uncategorized-${index + 1}`;
+    const normalizedDueDate = String(row?.dueDate || "").trim() || `undated-${index + 1}`;
+    const uniqueKey = `${groupKey}__${normalizedCategory}__${normalizedDueDate}`;
+    const nextPriority = resolveMaintenanceStatusPriority(row?.statusKey);
+    const current = categoryMap.get(uniqueKey);
+
+    if (!current) {
+      categoryMap.set(uniqueKey, {
+        ...row,
+        key: uniqueKey,
+        sourceCategory,
+        asset: sourceCategory,
+        dueDate: normalizedDueDate,
+        planCount: 1,
+        statusPriority: nextPriority,
+      });
+      return;
+    }
+
+    current.planCount += 1;
+
+    if (nextPriority > current.statusPriority) {
+      current.statusPriority = nextPriority;
+      current.statusKey = row?.statusKey || current.statusKey;
+      current.statusLabel = row?.statusLabel || current.statusLabel;
+      current.dueDate = row?.dueDate || current.dueDate;
+      current.endDate = row?.endDate || current.endDate;
+      current.actualStatus = row?.actualStatus || current.actualStatus;
+    }
+  });
+
+  return Array.from(categoryMap.values()).map(({ statusPriority, ...item }) => item);
+}
+
 function normalizeMaintenanceMonthlyStatus({ actualStatus, targetDate, today = new Date() }) {
   const normalizedActualStatus = normalizeText(actualStatus);
   if (normalizedActualStatus === "actual") return "completed";
@@ -707,15 +803,24 @@ async function buildMaintenanceMonthlyStatusSummary({ month, year, today = new D
     actualByCheckAndDate.set(`${actual.check_id}__${actual.tanggal}`, actual);
   });
 
-  const rows = [];
-  const summary = { ...emptySummary };
+  const monthlyPlanRows = [];
+  const plannedDatesCache = new Map();
 
   for (const entry of allChecks) {
     const categoryGroup = resolveMaintenanceCategoryGroupFromStandard(entry.standard);
     const periodik = entry.check?.periodik;
     if (!periodik || !categoryGroup) continue;
 
-    const allDates = await resolveDashboardPlannedDates(Number(year), entry.check, periodik);
+    const plannedDatesCacheKey = entry.check?.id
+      ? `check-${entry.check.id}`
+      : `periodik-${year}-${String(periodik || "").trim().toUpperCase()}`;
+    let allDates = plannedDatesCache.get(plannedDatesCacheKey);
+
+    if (!allDates) {
+      allDates = await resolveDashboardPlannedDates(Number(year), entry.check, periodik);
+      plannedDatesCache.set(plannedDatesCacheKey, allDates);
+    }
+
     const monthDates = allDates.filter((date) => date.startsWith(`${year}-${monthKey}`));
     if (!monthDates.length) continue;
 
@@ -727,8 +832,7 @@ async function buildMaintenanceMonthlyStatusSummary({ month, year, today = new D
         today,
       });
 
-      summary[statusKey] += 1;
-      rows.push({
+      monthlyPlanRows.push({
         key: actual?.id || `${categoryGroup.key}-${entry.check.id}-${date}`,
         asset: entry.standard?.namaPerangkat || entry.standard?.subPerangkat || entry.standard?.subKategori || "-",
         categoryGroup: categoryGroup.key,
@@ -748,10 +852,21 @@ async function buildMaintenanceMonthlyStatusSummary({ month, year, today = new D
     }
   }
 
+  const rows = buildMaintenanceStatusEntriesBySourceCategory(monthlyPlanRows);
+  const summary = rows.reduce(
+    (acc, row) => {
+      const statusKey = row?.statusKey || "upcoming";
+      acc[statusKey] += 1;
+      return acc;
+    },
+    { ...emptySummary }
+  );
+
   return { summary, rows };
 }
 
 function buildMaintenanceAbnormalCategorySummary(abnormalLogs = []) {
+  const aggregatedEntries = buildMaintenanceAbnormalEntriesBySourceCategory(abnormalLogs);
   const summaryMap = new Map(
     MAINTENANCE_CATEGORY_GROUPS.map((group) => [
       group.key,
@@ -766,10 +881,9 @@ function buildMaintenanceAbnormalCategorySummary(abnormalLogs = []) {
     ])
   );
 
-  abnormalLogs.forEach((abnormalLog) => {
-    const group = resolveAbnormalCategoryGroup(abnormalLog);
-    const bucket = summaryMap.get(group.key);
-    const status = normalizeText(abnormalLog?.status_temuan);
+  aggregatedEntries.forEach((entry) => {
+    const bucket = summaryMap.get(entry.groupKey);
+    const status = entry.status;
 
     bucket.total += 1;
     if (status === "open") {
@@ -782,6 +896,54 @@ function buildMaintenanceAbnormalCategorySummary(abnormalLogs = []) {
   });
 
   return Array.from(summaryMap.values());
+}
+
+function resolveAbnormalSourceCategory(abnormalLog = {}) {
+  const standardMaintenance =
+    abnormalLog?.actual?.check?.standard_maintenance_detail?.standard_maintenance ||
+    abnormalLog?.actual?.schedule?.StandardMaintenance ||
+    null;
+
+  return (
+    String(standardMaintenance?.kategori || "").trim() ||
+    String(standardMaintenance?.subKategori || "").trim() ||
+    String(standardMaintenance?.namaPerangkat || "").trim() ||
+    String(standardMaintenance?.subPerangkat || "").trim() ||
+    "-"
+  );
+}
+
+function resolveAbnormalCategoryPriority(status = "") {
+  const normalizedStatus = normalizeText(status);
+  if (normalizedStatus === "open") return 3;
+  if (normalizedStatus === "resolved") return 1;
+  return 2;
+}
+
+function buildMaintenanceAbnormalEntriesBySourceCategory(abnormalLogs = []) {
+  const categoryMap = new Map();
+
+  (Array.isArray(abnormalLogs) ? abnormalLogs : []).forEach((abnormalLog, index) => {
+    const group = resolveAbnormalCategoryGroup(abnormalLog);
+    const sourceCategory = resolveAbnormalSourceCategory(abnormalLog);
+    const normalizedCategory = normalizeText(sourceCategory) || `uncategorized-${index + 1}`;
+    const uniqueKey = `${group.key}__${normalizedCategory}`;
+    const nextStatus = normalizeText(abnormalLog?.status_temuan) || "in-progress";
+    const nextPriority = resolveAbnormalCategoryPriority(nextStatus);
+    const current = categoryMap.get(uniqueKey);
+
+    if (!current || nextPriority > current.priority) {
+      categoryMap.set(uniqueKey, {
+        key: uniqueKey,
+        groupKey: group.key,
+        sourceCategory,
+        status: nextStatus,
+        priority: nextPriority,
+      });
+    }
+  });
+
+  return Array.from(categoryMap.values());
 }
 
 function buildAssetCategorySummary(assetRows = [], totalAsset = 0) {
@@ -805,6 +967,59 @@ function buildAssetCategorySummary(assetRows = [], totalAsset = 0) {
       ...item,
       percent: totalAsset > 0 ? Number(((item.count / totalAsset) * 100).toFixed(1)) : 0,
     }));
+}
+
+function buildHardwareScopeSummary(assetRows = [], totalAsset = 0) {
+  const scopeMap = new Map([
+    ["client", { key: "client", label: "Client", total: 0, categories: [] }],
+    ["utama", { key: "utama", label: "Utama", total: 0, categories: [] }],
+  ]);
+  const categoryMaps = new Map([
+    ["client", new Map()],
+    ["utama", new Map()],
+  ]);
+
+  assetRows.forEach((assetRow, index) => {
+    if (isSoftwareAssetSummaryRow(assetRow)) return;
+
+    const scopeKey = resolveHardwareAssetScope(assetRow);
+    if (!scopeKey || !scopeMap.has(scopeKey)) return;
+
+    const scopeEntry = scopeMap.get(scopeKey);
+    const categoryLabel = resolveAssetSummaryCategory(assetRow) || `Category ${index + 1}`;
+    const categoryMap = categoryMaps.get(scopeKey);
+    const currentCategory = categoryMap.get(categoryLabel) || {
+      key: normalizeText(categoryLabel).replace(/\s+/g, "-") || `category-${index + 1}`,
+      category: categoryLabel,
+      count: 0,
+    };
+
+    currentCategory.count += 1;
+    scopeEntry.total += 1;
+    categoryMap.set(categoryLabel, currentCategory);
+  });
+
+  return Object.fromEntries(
+    Array.from(scopeMap.entries()).map(([scopeKey, scopeEntry]) => {
+      const categories = Array.from(categoryMaps.get(scopeKey).values())
+        .sort((left, right) => right.count - left.count || left.category.localeCompare(right.category))
+        .map((item) => ({
+          ...item,
+          percent: scopeEntry.total > 0 ? Number(((item.count / scopeEntry.total) * 100).toFixed(1)) : 0,
+        }));
+
+      return [
+        scopeKey,
+        {
+          ...scopeEntry,
+          percentOfTotal: totalAsset > 0 ? Number(((scopeEntry.total / totalAsset) * 100).toFixed(1)) : 0,
+          categoryCount: categories.length,
+          topCategories: categories.slice(0, 5),
+          categories,
+        },
+      ];
+    })
+  );
 }
 
 const dummyAssetBudgets = [
@@ -947,7 +1162,15 @@ export const getDashboardSummary = async (req, res) => {
               model: AssetCategory,
               as: "parent",
               required: false,
-              attributes: ["category_id", "category_name"],
+              attributes: ["category_id", "category_name", "parent_id"],
+              include: [
+                {
+                  model: AssetCategory,
+                  as: "parent",
+                  required: false,
+                  attributes: ["category_id", "category_name"],
+                },
+              ],
             },
           ],
         },
@@ -967,6 +1190,7 @@ export const getDashboardSummary = async (req, res) => {
     });
 
     const categorySummary = buildAssetCategorySummary(assetSummaryRows, totalAsset);
+    const hardwareBreakdown = buildHardwareScopeSummary(assetSummaryRows, totalAsset);
 
     const acquisitionValue = allBudgetRows.reduce((sum, item) => sum + Number(item.purchase_price || item.price_pengajuan || item.budget || item.initial_plan || 0), 0);
     const bookValue = allBudgetRows.reduce((sum, item) => sum + Number(item.budget || item.purchase_price || item.price_pengajuan || item.initial_plan || 0), 0);
@@ -1170,10 +1394,6 @@ export const getDashboardSummary = async (req, res) => {
     }));
 
     // Maintenance Abnormal Logs
-    const totalAbnormals = await MaintenanceAbnormalLog.count();
-    const openAbnormals = await MaintenanceAbnormalLog.count({ where: { status_temuan: 'OPEN' } });
-    const inProgressAbnormals = await MaintenanceAbnormalLog.count({ where: { status_temuan: { [Op.notIn]: ['OPEN', 'RESOLVED'] } } });
-    const resolvedAbnormals = await MaintenanceAbnormalLog.count({ where: { status_temuan: 'RESOLVED' } });
     const allAbnormalCategories = await MaintenanceAbnormalLog.findAll({
       attributes: ["id", "status_temuan"],
       include: [
@@ -1242,6 +1462,11 @@ export const getDashboardSummary = async (req, res) => {
         },
       ],
     });
+    const abnormalCategoryEntries = buildMaintenanceAbnormalEntriesBySourceCategory(allAbnormalCategories);
+    const totalAbnormals = abnormalCategoryEntries.length;
+    const openAbnormals = abnormalCategoryEntries.filter((entry) => entry.status === "open").length;
+    const resolvedAbnormals = abnormalCategoryEntries.filter((entry) => entry.status === "resolved").length;
+    const inProgressAbnormals = Math.max(totalAbnormals - openAbnormals - resolvedAbnormals, 0);
 
     const recentAbnormals = await MaintenanceAbnormalLog.findAll({
       limit: 10,
@@ -1344,6 +1569,7 @@ export const getDashboardSummary = async (req, res) => {
           depreciationValue,
           bookValue,
           topCategories: categorySummary.slice(0, 4),
+          hardwareBreakdown,
         },
         budgetSummary: {
           total: allBudgetRows.length,
@@ -1412,7 +1638,15 @@ export const getFullSummary = async (req, res) => {
               model: AssetCategory,
               as: "parent",
               required: false,
-              attributes: ["category_id", "category_name"],
+              attributes: ["category_id", "category_name", "parent_id"],
+              include: [
+                {
+                  model: AssetCategory,
+                  as: "parent",
+                  required: false,
+                  attributes: ["category_id", "category_name"],
+                },
+              ],
             },
           ],
         },
@@ -1420,6 +1654,7 @@ export const getFullSummary = async (req, res) => {
       order: [["asset_id", "ASC"]],
     });
     const categorySummary = buildAssetCategorySummary(assetSummaryRows, totalAsset);
+    const hardwareBreakdown = buildHardwareScopeSummary(assetSummaryRows, totalAsset);
 
     // 2. Budget Summary
     const budgetRows = await AssetBudget.findAll({ raw: true, order: [['created_at', 'DESC']] });
@@ -1554,9 +1789,10 @@ export const getFullSummary = async (req, res) => {
         },
       ],
     });
-    const totalAbnormals = allAbnormalCategories.length;
-    const openAbnormals = allAbnormalCategories.filter((row) => normalizeText(row?.status_temuan) === "open").length;
-    const resolvedAbnormals = allAbnormalCategories.filter((row) => normalizeText(row?.status_temuan) === "resolved").length;
+    const abnormalCategoryEntries = buildMaintenanceAbnormalEntriesBySourceCategory(allAbnormalCategories);
+    const totalAbnormals = abnormalCategoryEntries.length;
+    const openAbnormals = abnormalCategoryEntries.filter((entry) => entry.status === "open").length;
+    const resolvedAbnormals = abnormalCategoryEntries.filter((entry) => entry.status === "resolved").length;
     const inProgressAbnormals = Math.max(totalAbnormals - openAbnormals - resolvedAbnormals, 0);
 
     // Latest Logsheets for table
@@ -1700,6 +1936,7 @@ export const getFullSummary = async (req, res) => {
             { key: 'dummy-cat-2', category: 'Server', count: 32, percent: '7.1%' },
             { key: 'dummy-cat-3', category: 'Network Devices', count: 48, percent: '10.6%' },
           ],
+          hardwareBreakdown,
           value: {
             acquisition: acquisitionValue || 4520000000,
             depreciation: acquisitionValue ? Math.round(acquisitionValue * 0.42) : 1890000000,

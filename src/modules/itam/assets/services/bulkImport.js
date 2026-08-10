@@ -35,17 +35,82 @@ const TYPE_ALIAS_GROUPS = [
     candidates: ["acces door", "face attendance"],
   },
   {
-    aliases: ["gathering", "teleconference", "podcast", "wireless display transmiter", "camera pocket"],
-    candidates: ["teleconference", "podcast", "wireless display transmiter", "camera pocket"],
+    aliases: ["gathering"],
+    candidates: ["gathering"],
+  },
+  {
+    aliases: ["projector"],
+    candidates: ["projector"],
+  },
+  {
+    aliases: ["camera pocket"],
+    candidates: ["camera pocket"],
+  },
+  {
+    aliases: ["teleconference kit", "teleconference", "wireless display transmiter"],
+    candidates: ["teleconference kit", "teleconference"],
+  },
+  {
+    aliases: ["smart tv", "android tv"],
+    candidates: ["smart tv"],
+  },
+  {
+    aliases: ["printer", "dotmatrix"],
+    candidates: ["printer"],
+  },
+  {
+    aliases: ["tab", "tablet", "galaxy tab", "ipad"],
+    candidates: ["tab"],
+  },
+  {
+    aliases: ["podcast"],
+    candidates: ["podcast"],
+  },
+  {
+    aliases: ["firewall", "fortigate", "palo alto", "sophos"],
+    candidates: ["firewall"],
+  },
+  {
+    aliases: ["switch", "switching", "router", "mikrotik", "core switch"],
+    candidates: ["switch"],
+  },
+  {
+    aliases: ["access point", "accesspoint", "wireless ap"],
+    candidates: ["access point"],
+  },
+  {
+    aliases: ["physical server", "server", "vm", "virtual machine", "vmware", "esxi", "hyper-v", "proxmox"],
+    candidates: ["physical server & vm", "physical server", "server", "vm"],
+  },
+  {
+    aliases: ["storage", "nas", "san"],
+    candidates: ["storage"],
+  },
+  {
+    aliases: ["ups", "apc ups", "uninterruptible power supply"],
+    candidates: ["ups"],
   },
 ];
 
 const TYPE_CODE_CANDIDATES = {
  PC: ["personal computer", "pc", "desktop", "all in one", "workstation", "pc industrial"],
  CCTV: ["cctv", "nvr", "camera"],
- GATHERING: ["teleconference", "podcast", "wireless display transmiter", "camera pocket", "gathering"],
+ GATHERING: ["gathering"],
  SCANNER: ["scanners", "scanner"],
  ACCESSDOOR: ["acces door", "access door", "face attendance", "fingerprint", "reader", "suprema"],
+ PROJECTOR: ["projector"],
+ "CAMERA POCKET": ["camera pocket"],
+ "TELECONFERENCE KIT": ["teleconference kit", "teleconference", "wireless display transmiter"],
+ "SMART TV": ["smart tv", "android tv"],
+ PRINTER: ["printer", "dotmatrix"],
+ TAB: ["tab", "tablet", "galaxy tab", "ipad"],
+ PODCAST: ["podcast"],
+ FIREWALL: ["firewall", "fortigate", "palo alto", "sophos"],
+ SWITCH: ["switch", "switching", "router", "mikrotik", "core switch"],
+ "ACCESS POINT": ["access point", "accesspoint", "wireless ap"],
+ SERVER: ["physical server & vm", "physical server", "server", "vm", "virtual machine", "vmware", "esxi", "hyper-v", "proxmox"],
+ STORAGE: ["storage", "nas", "san"],
+ UPS: ["ups", "apc ups", "uninterruptible power supply"],
 };
 
 function normalizeValue(value = "") {
@@ -62,7 +127,7 @@ function isGatheringFamily(typeCode = "", typeValue = "") {
  const normalizedTypeValue = normalizeValue(typeValue);
  return (
   normalizedTypeCode === "GATHERING" ||
-  ["gathering", "teleconference", "podcast", "wireless display transmiter", "camera pocket"].some(
+  ["gathering"].some(
    (keyword) =>
     normalizedTypeValue === keyword ||
     normalizedTypeValue.includes(keyword)
@@ -84,6 +149,32 @@ function resolveGenericTypeCodeName(typeCode = "") {
    return "SCANNER";
   case "ACCESSDOOR":
    return "ACCESSDOOR";
+  case "PROJECTOR":
+   return "PROJECTOR";
+  case "CAMERA POCKET":
+   return "CAMERA POCKET";
+  case "TELECONFERENCE KIT":
+   return "TELECONFERENCE KIT";
+  case "SMART TV":
+   return "SMART TV";
+  case "PRINTER":
+   return "PRINTER";
+  case "TAB":
+   return "TAB";
+  case "PODCAST":
+   return "PODCAST";
+  case "FIREWALL":
+   return "FIREWALL";
+  case "SWITCH":
+   return "SWITCH";
+  case "ACCESS POINT":
+   return "ACCESS POINT";
+  case "SERVER":
+   return "PHYSICAL SERVER & VM";
+  case "STORAGE":
+   return "STORAGE";
+  case "UPS":
+   return "UPS";
   case "LAINNYA":
    return "LAINNYA";
   default:
@@ -112,7 +203,56 @@ function isSoftwareCategory(categoryId, categories = []) {
 }
 
 function normalizeLookupValue(value = "") {
- return String(value || "").trim();
+ const normalized = String(value || "").trim();
+ if (!normalized) return "";
+
+ const upperValue = normalized.toUpperCase();
+ if (["-", "--", "N/A", "NA", "NULL"].includes(upperValue)) {
+  return "";
+ }
+
+ return normalized;
+}
+
+function buildImportIdentity(payload = {}) {
+ return {
+  asset_code: normalizeLookupValue(payload.asset_code),
+  asset_name: normalizeLookupValue(payload.asset_name),
+  purchase_date: normalizeLookupValue(payload.purchase_date),
+  category_id: payload.category_id || null,
+ };
+}
+
+function buildCategoryMap(categories = []) {
+ return new Map(
+  categories.map((category) => [String(category.category_id), category])
+ );
+}
+
+function categoryBelongsToRoot(categoryId, rootName, categories = []) {
+ const categoryMap = buildCategoryMap(categories);
+ let current = categoryMap.get(String(categoryId || ""));
+
+ while (current) {
+  if (!current.parent_id) {
+   return normalizeValue(current.category_name) === normalizeValue(rootName);
+  }
+
+  current = categoryMap.get(String(current.parent_id || ""));
+ }
+
+ return false;
+}
+
+function isUtamaHardwareTypeCode(typeCode = "") {
+ return new Set([
+  "FIREWALL",
+  "SWITCH",
+  "ACCESS POINT",
+  "SERVER",
+  "STORAGE",
+  "UPS",
+ ]).has(String(typeCode || "").trim().toUpperCase());
 }
 
 export default async function (
@@ -153,16 +293,21 @@ export default async function (
      normalizeValue(category.category_name) === normalizeValue(rootName)
    );
 
-  const resolveCategoryId = (rawTypeValue) => {
+  const resolveCategoryId = (rawTypeValue, rootName = "") => {
    const normalizedType = normalizeValue(rawTypeValue);
    if (!normalizedType) return null;
 
    const exactMatch = allCategories.find(
-    (category) => normalizeValue(category.category_name) === normalizedType
+    (category) =>
+     normalizeValue(category.category_name) === normalizedType &&
+     (!rootName || categoryBelongsToRoot(category.category_id, rootName, allCategories))
    );
    if (exactMatch) return exactMatch.category_id;
 
    const containsMatch = allCategories.find((category) => {
+    if (rootName && !categoryBelongsToRoot(category.category_id, rootName, allCategories)) {
+     return false;
+    }
     const categoryName = normalizeValue(category.category_name);
     return categoryName.includes(normalizedType) || normalizedType.includes(categoryName);
    });
@@ -179,7 +324,9 @@ export default async function (
 
    for (const candidate of aliasGroup.candidates) {
     const matchedCandidate = allCategories.find(
-     (category) => normalizeValue(category.category_name) === normalizeValue(candidate)
+     (category) =>
+      normalizeValue(category.category_name) === normalizeValue(candidate) &&
+      (!rootName || categoryBelongsToRoot(category.category_id, rootName, allCategories))
     );
     if (matchedCandidate) {
      return matchedCandidate.category_id;
@@ -188,6 +335,9 @@ export default async function (
 
    for (const candidate of aliasGroup.candidates) {
     const matchedCandidate = allCategories.find((category) => {
+     if (rootName && !categoryBelongsToRoot(category.category_id, rootName, allCategories)) {
+      return false;
+     }
      const categoryName = normalizeValue(category.category_name);
      const normalizedCandidate = normalizeValue(candidate);
      return (
@@ -200,8 +350,9 @@ export default async function (
     }
    }
 
-   if (aliasGroup.aliases.some((alias) => includesKeywordMatch(normalizedType, [alias]))) {
+  if (aliasGroup.aliases.some((alias) => includesKeywordMatch(normalizedType, [alias]))) {
     const matchedByAliasKeyword = allCategories.find((category) =>
+     (!rootName || categoryBelongsToRoot(category.category_id, rootName, allCategories)) &&
      aliasGroup.aliases.some((alias) =>
       includesKeywordMatch(category.category_name, [alias])
      )
@@ -212,7 +363,8 @@ export default async function (
    }
 
    if (includesKeywordMatch(normalizedType, ["pc", "personal computer", "desktop", "all in one", "workstation"])) {
-    const matchedPcCategory = allCategories.find((category) =>
+   const matchedPcCategory = allCategories.find((category) =>
+     (!rootName || categoryBelongsToRoot(category.category_id, rootName, allCategories)) &&
      includesKeywordMatch(category.category_name, ["pc", "personal computer", "desktop", "all in one", "workstation"])
     );
     if (matchedPcCategory) {
@@ -221,7 +373,8 @@ export default async function (
    }
 
    if (includesKeywordMatch(normalizedType, ["access door", "acces door", "fingerprint", "reader", "suprema"])) {
-    const matchedAccessDoorCategory = allCategories.find((category) =>
+   const matchedAccessDoorCategory = allCategories.find((category) =>
+     (!rootName || categoryBelongsToRoot(category.category_id, rootName, allCategories)) &&
      includesKeywordMatch(category.category_name, ["access door", "acces door", "fingerprint", "reader", "suprema", "face attendance"])
     );
     if (matchedAccessDoorCategory) {
@@ -232,11 +385,14 @@ export default async function (
    return null;
   };
 
-  const resolveCategoryIdByTypeCode = (rawTypeCode) => {
+  const resolveCategoryIdByTypeCode = (rawTypeCode, rootName = "") => {
    const normalizedTypeCode = normalizeValue(rawTypeCode).toUpperCase();
    if (!normalizedTypeCode) return null;
 
    const directTypeCodeMatch = allCategories.find((category) => {
+    if (rootName && !categoryBelongsToRoot(category.category_id, rootName, allCategories)) {
+     return false;
+    }
     const categoryName = normalizeValue(category.category_name);
     const normalizedCodeName = normalizeValue(normalizedTypeCode);
     return (
@@ -254,7 +410,9 @@ export default async function (
 
    for (const candidate of candidates) {
     const matchedCandidate = allCategories.find(
-     (category) => normalizeValue(category.category_name) === normalizeValue(candidate)
+     (category) =>
+      normalizeValue(category.category_name) === normalizeValue(candidate) &&
+      (!rootName || categoryBelongsToRoot(category.category_id, rootName, allCategories))
     );
     if (matchedCandidate) {
      return matchedCandidate.category_id;
@@ -262,9 +420,12 @@ export default async function (
    }
 
    for (const candidate of candidates) {
-    const matchedCandidate = allCategories.find((category) =>
-     includesKeywordMatch(category.category_name, [candidate])
-    );
+    const matchedCandidate = allCategories.find((category) => {
+     if (rootName && !categoryBelongsToRoot(category.category_id, rootName, allCategories)) {
+      return false;
+     }
+     return includesKeywordMatch(category.category_name, [candidate]);
+    });
     if (matchedCandidate) {
      return matchedCandidate.category_id;
     }
@@ -295,6 +456,19 @@ export default async function (
     "GATHERING",
     "SCANNER",
     "ACCESSDOOR",
+    "PROJECTOR",
+    "CAMERA POCKET",
+    "TELECONFERENCE KIT",
+    "SMART TV",
+    "PRINTER",
+    "TAB",
+    "PODCAST",
+    "FIREWALL",
+    "SWITCH",
+    "ACCESS POINT",
+    "SERVER",
+    "STORAGE",
+    "UPS",
     "LAINNYA",
    ]);
    const hardwareRoot = findRootCategory("Hardware");
@@ -350,17 +524,20 @@ export default async function (
     row.category_name ||
     row.__sheet_name ||
     null;
+   const preferredRootName = isUtamaHardwareTypeCode(typeCodeRaw)
+    ? "Hardware"
+    : "";
    
    if (!categoryId && typeCodeRaw) {
-    categoryId = resolveCategoryIdByTypeCode(typeCodeRaw);
+    categoryId = resolveCategoryIdByTypeCode(typeCodeRaw, preferredRootName);
    }
 
    if (!categoryId && typeStrRaw) {
-    categoryId = resolveCategoryId(typeStrRaw);
+    categoryId = resolveCategoryId(typeStrRaw, preferredRootName);
    }
 
    if (!categoryId && normalizeValue(typeCodeRaw).toUpperCase() === "GATHERING") {
-    categoryId = resolveCategoryId("teleconference");
+    categoryId = resolveCategoryId("teleconference", preferredRootName);
    }
 
    if (!categoryId && typeCodeRaw) {
@@ -457,7 +634,7 @@ export default async function (
    };
 
    const normalizedHostname = normalizeLookupValue(payload.hostname);
-   const normalizedAssetCode = normalizeLookupValue(payload.asset_code);
+   const importIdentity = buildImportIdentity(payload);
 
    let exist = null;
 
@@ -470,12 +647,25 @@ export default async function (
     });
    }
 
-   // For CCTV and similar assets, hostname is the real unique key.
-   // Only fall back to asset_code when hostname is absent.
-   if (!exist && !normalizedHostname && normalizedAssetCode) {
+   // When hostname is absent, only treat rows as the same asset
+   // if their import identity matches, so duplicate asset_code values
+   // can still be imported as separate component rows.
+   if (
+    !exist &&
+    !normalizedHostname &&
+    importIdentity.asset_code &&
+    importIdentity.asset_name
+   ) {
     exist = await Asset.findOne({
      where: {
-      asset_code: normalizedAssetCode,
+      asset_code: importIdentity.asset_code,
+      asset_name: importIdentity.asset_name,
+      ...(importIdentity.purchase_date
+       ? { purchase_date: importIdentity.purchase_date }
+       : { purchase_date: null }),
+      ...(importIdentity.category_id
+       ? { category_id: importIdentity.category_id }
+       : {}),
      },
      transaction: trx,
     });

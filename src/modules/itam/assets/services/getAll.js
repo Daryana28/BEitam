@@ -43,9 +43,22 @@ const WORKBOOK_TAB_ALIASES = {
  hardware: {
   pc: ["pc", "personal computer", "desktop", "workstation", "all in one", "pc industrial", "laptop"],
   cctv: ["cctv", "nvr", "camera"],
-  gathering: ["gathering", "teleconference", "wireless display transmiter", "camera pocket", "podcast"],
+  gathering: ["gathering"],
   scanner: ["scanner", "scanners", "barcode scanner", "bht"],
   accessdoor: ["accessdoor", "acces door", "access door", "reader", "fingerprint", "face attendance", "suprema"],
+  projector: ["projector"],
+  "camera-pocket": ["camera pocket"],
+  "teleconference-kit": ["teleconference kit", "teleconference", "wireless display transmiter"],
+  "smart-tv": ["smart tv", "android tv"],
+  printer: ["printer", "dotmatrix"],
+  tab: ["tab", "tablet", "galaxy tab", "ipad"],
+  podcast: ["podcast"],
+  firewall: ["firewall", "fortigate", "palo alto", "sophos"],
+  switch: ["switch", "switching", "router", "mikrotik", "core switch"],
+  "access-point": ["access point", "accesspoint", "wireless ap"],
+  "server-vm": ["physical server & vm", "physical server", "server", "vm", "virtual machine", "vmware", "esxi", "hyper-v", "proxmox"],
+  storage: ["storage", "nas", "san"],
+  ups: ["ups", "apc ups", "uninterruptible power supply"],
   },
 };
 

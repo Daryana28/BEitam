@@ -91,6 +91,14 @@ export default (sequelize) =>
     allowNull: false,
     defaultValue: "All",
    },
+   status_override: {
+    type: DataTypes.STRING(50),
+    allowNull: true,
+   },
+   status_note: {
+    type: DataTypes.STRING(255),
+    allowNull: true,
+   },
    stages_json: {
     type: DataTypes.TEXT,
     allowNull: false,

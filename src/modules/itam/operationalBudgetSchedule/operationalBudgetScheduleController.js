@@ -1,5 +1,60 @@
 import { OperationalBudgetScheduleItem } from "../../../models/index.js";
 
+let operationalBudgetScheduleColumnsPromise = null;
+
+async function getOperationalBudgetScheduleColumns() {
+  if (!operationalBudgetScheduleColumnsPromise) {
+    operationalBudgetScheduleColumnsPromise = OperationalBudgetScheduleItem.sequelize
+      .getQueryInterface()
+      .describeTable(OperationalBudgetScheduleItem.getTableName())
+      .catch((error) => {
+        operationalBudgetScheduleColumnsPromise = null;
+        throw error;
+      });
+  }
+
+  return operationalBudgetScheduleColumnsPromise;
+}
+
+async function getOperationalBudgetScheduleOptionalFlags() {
+  const columns = await getOperationalBudgetScheduleColumns();
+  return {
+    hasStatusOverride: Boolean(columns.status_override),
+    hasStatusNote: Boolean(columns.status_note),
+  };
+}
+
+function buildOperationalBudgetScheduleAttributes(optionalFlags = {}) {
+  const attributes = [
+    "id",
+    "client_key",
+    "display_order",
+    "budget_code",
+    "subject",
+    "item_name",
+    "item_no",
+    "budget_plan_amount",
+    "actual_budget_amount",
+    "borrowed_from_budget_code",
+    "borrowed_from_item_name",
+    "borrowed_from_item_no",
+    "borrowed_amount",
+    "transfer_date",
+    "borrow_purpose",
+    "borrow_remark",
+    "po_time",
+    "allocation",
+    "budget_year",
+    "current_stage",
+    "stages_json",
+  ];
+
+  if (optionalFlags.hasStatusOverride) attributes.push("status_override");
+  if (optionalFlags.hasStatusNote) attributes.push("status_note");
+
+  return attributes;
+}
+
 function serializeScheduleItem(record) {
   let stages = {};
 
@@ -8,6 +63,10 @@ function serializeScheduleItem(record) {
   } catch {
     stages = {};
   }
+
+  const meta = stages?.__meta && typeof stages.__meta === "object" ? stages.__meta : {};
+  const serializedStages = { ...stages };
+  delete serializedStages.__meta;
 
   return {
     id: record.id,
@@ -30,12 +89,37 @@ function serializeScheduleItem(record) {
     allocation: record.allocation || "",
     budgetYear: record.budget_year,
     currentStage: record.current_stage || "All",
-    stages,
+    statusOverride: record.status_override || meta.statusOverride || "",
+    statusNote: record.status_note || meta.statusNote || "",
+    stages: serializedStages,
   };
 }
 
-function buildPayload(body = {}) {
-  return {
+function buildPayload(body = {}, options = {}) {
+  const normalizedStages =
+    body.stages && typeof body.stages === "object" ? JSON.parse(JSON.stringify(body.stages)) : {};
+  const metaStatusOverride = String(body.statusOverride || "").trim();
+  const metaStatusNote = String(body.statusNote || "").trim();
+
+  if (!options.hasStatusOverride || !options.hasStatusNote) {
+    if (metaStatusOverride || metaStatusNote) {
+      normalizedStages.__meta = {
+        ...(normalizedStages.__meta && typeof normalizedStages.__meta === "object"
+          ? normalizedStages.__meta
+          : {}),
+        statusOverride: metaStatusOverride,
+        statusNote: metaStatusNote,
+      };
+    } else if (normalizedStages.__meta) {
+      delete normalizedStages.__meta.statusOverride;
+      delete normalizedStages.__meta.statusNote;
+      if (Object.keys(normalizedStages.__meta).length === 0) {
+        delete normalizedStages.__meta;
+      }
+    }
+  }
+
+  const payload = {
     client_key: String(body.key || "").trim(),
     display_order: Number(body.no || 0),
     budget_code: String(body.budgetCode || "").trim(),
@@ -55,8 +139,18 @@ function buildPayload(body = {}) {
     allocation: String(body.allocation || "").trim() || null,
     budget_year: String(body.budgetYear || "").trim(),
     current_stage: String(body.currentStage || "All").trim() || "All",
-    stages_json: JSON.stringify(body.stages || {}),
+    stages_json: JSON.stringify(normalizedStages),
   };
+
+  if (options.hasStatusOverride) {
+    payload.status_override = metaStatusOverride || null;
+  }
+
+  if (options.hasStatusNote) {
+    payload.status_note = metaStatusNote || null;
+  }
+
+  return payload;
 }
 
 function validatePayload(body = {}) {
@@ -77,7 +171,11 @@ function validatePayload(body = {}) {
 
 export const getOperationalBudgetScheduleItems = async (_req, res) => {
   try {
+    const optionalFlags = await getOperationalBudgetScheduleOptionalFlags();
+    const attributes = buildOperationalBudgetScheduleAttributes(optionalFlags);
+
     const items = await OperationalBudgetScheduleItem.findAll({
+      attributes,
       order: [
         ["display_order", "ASC"],
         ["id", "ASC"],
@@ -99,6 +197,7 @@ export const getOperationalBudgetScheduleItems = async (_req, res) => {
 
 export const createOperationalBudgetScheduleItem = async (req, res) => {
   try {
+    const optionalFlags = await getOperationalBudgetScheduleOptionalFlags();
     const validationError = validatePayload(req.body);
     if (validationError) {
       return res.status(400).json({
@@ -107,7 +206,7 @@ export const createOperationalBudgetScheduleItem = async (req, res) => {
       });
     }
 
-    const created = await OperationalBudgetScheduleItem.create(buildPayload(req.body));
+    const created = await OperationalBudgetScheduleItem.create(buildPayload(req.body, optionalFlags));
 
     res.status(201).json({
       success: true,
@@ -124,6 +223,8 @@ export const createOperationalBudgetScheduleItem = async (req, res) => {
 
 export const updateOperationalBudgetScheduleItem = async (req, res) => {
   try {
+    const optionalFlags = await getOperationalBudgetScheduleOptionalFlags();
+    const attributes = buildOperationalBudgetScheduleAttributes(optionalFlags);
     const validationError = validatePayload(req.body);
     if (validationError) {
       return res.status(400).json({
@@ -132,7 +233,9 @@ export const updateOperationalBudgetScheduleItem = async (req, res) => {
       });
     }
 
-    const item = await OperationalBudgetScheduleItem.findByPk(req.params.id);
+    const item = await OperationalBudgetScheduleItem.findByPk(req.params.id, {
+      attributes,
+    });
     if (!item) {
       return res.status(404).json({
         success: false,
@@ -140,7 +243,7 @@ export const updateOperationalBudgetScheduleItem = async (req, res) => {
       });
     }
 
-    await item.update(buildPayload(req.body));
+    await item.update(buildPayload(req.body, optionalFlags));
 
     res.status(200).json({
       success: true,
@@ -157,7 +260,10 @@ export const updateOperationalBudgetScheduleItem = async (req, res) => {
 
 export const deleteOperationalBudgetScheduleItem = async (req, res) => {
   try {
-    const item = await OperationalBudgetScheduleItem.findByPk(req.params.id);
+    const optionalFlags = await getOperationalBudgetScheduleOptionalFlags();
+    const item = await OperationalBudgetScheduleItem.findByPk(req.params.id, {
+      attributes: buildOperationalBudgetScheduleAttributes(optionalFlags),
+    });
     if (!item) {
       return res.status(404).json({
         success: false,
