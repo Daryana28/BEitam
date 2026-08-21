@@ -31,6 +31,11 @@ export default (sequelize) =>
     allowNull: false,
    },
 
+   description: {
+    type: DataTypes.STRING(500),
+    allowNull: true,
+   },
+
    serial_number: {
     type: DataTypes.STRING(100),
     allowNull: true,
@@ -48,6 +53,12 @@ export default (sequelize) =>
    },
 
    depreciation_date: {
+    type:
+     DataTypes.DATEONLY,
+    allowNull: true,
+   },
+
+   warranty_end: {
     type:
      DataTypes.DATEONLY,
     allowNull: true,

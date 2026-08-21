@@ -219,6 +219,11 @@ function buildImportIdentity(payload = {}) {
   asset_code: normalizeLookupValue(payload.asset_code),
   asset_name: normalizeLookupValue(payload.asset_name),
   purchase_date: normalizeLookupValue(payload.purchase_date),
+  depreciation_date: normalizeLookupValue(payload.depreciation_date),
+  division: normalizeLookupValue(payload.division),
+  department: normalizeLookupValue(payload.department),
+  owner_name: normalizeLookupValue(payload.owner_name),
+  hostname: normalizeLookupValue(payload.hostname),
   category_id: payload.category_id || null,
  };
 }
@@ -583,7 +588,12 @@ export default async function (
 
    const payload = {
     asset_code: assetCode,
-    asset_name: assetName,
+   asset_name: assetName,
+    description:
+     row.description ||
+     row.DESCRIPTION ||
+     row.DESKRIPSI ||
+     null,
     category_id:
      categoryId,
     location_id:
@@ -638,7 +648,7 @@ export default async function (
 
    let exist = null;
 
-   if (normalizedHostname) {
+   if (!softwareMode && normalizedHostname) {
     exist = await Asset.findOne({
      where: {
       hostname: normalizedHostname,
@@ -652,7 +662,6 @@ export default async function (
    // can still be imported as separate component rows.
    if (
     !exist &&
-    !normalizedHostname &&
     importIdentity.asset_code &&
     importIdentity.asset_name
    ) {
@@ -663,6 +672,21 @@ export default async function (
       ...(importIdentity.purchase_date
        ? { purchase_date: importIdentity.purchase_date }
        : { purchase_date: null }),
+      ...(importIdentity.depreciation_date
+       ? { depreciation_date: importIdentity.depreciation_date }
+       : { depreciation_date: null }),
+      ...(importIdentity.division
+       ? { division: importIdentity.division }
+       : { division: null }),
+      ...(importIdentity.department
+       ? { department: importIdentity.department }
+       : { department: null }),
+      ...(importIdentity.owner_name
+       ? { owner_name: importIdentity.owner_name }
+       : { owner_name: null }),
+      ...(importIdentity.hostname
+       ? { hostname: importIdentity.hostname }
+       : { hostname: null }),
       ...(importIdentity.category_id
        ? { category_id: importIdentity.category_id }
        : {}),

@@ -60,6 +60,11 @@ const WORKBOOK_TAB_ALIASES = {
   storage: ["storage", "nas", "san"],
   ups: ["ups", "apc ups", "uninterruptible power supply"],
   },
+ "software-hardware": {
+  "hardware-warranty": ["hardware warranty", "warranty hardware", "garansi hardware"],
+  "license-software": ["license software", "software license", "lisensi software", "lisensi aplikasi"],
+  "maintenance-fee": ["maintenance fee", "biaya maintenance", "maintenance cost", "support fee"],
+ },
 };
 
 function normalizeValue(value = "") {
@@ -161,12 +166,14 @@ const likeFields = [
  "asset_code",
   "serial_number",
   "asset_name",
+  "description",
   "division",
   "department",
   "owner_name",
   "nik",
   "purchase_date",
   "depreciation_date",
+  "warranty_end",
   "hostname",
   "ip_main",
   "ip_backup",
@@ -204,15 +211,21 @@ const likeFields = [
   }
  });
 
- if (query.workbook_tab) {
+  if (query.workbook_tab) {
   const workbookTab = String(query.workbook_tab).trim().toLowerCase();
-  const aliases = WORKBOOK_TAB_ALIASES.hardware[workbookTab] || [];
+  const routeGroup = String(query.route_group || "").trim().toLowerCase();
+  const routeWorkbookAliases = WORKBOOK_TAB_ALIASES[routeGroup] || WORKBOOK_TAB_ALIASES.hardware;
+  const aliases = routeWorkbookAliases[workbookTab] || [];
 
   if (aliases.length > 0) {
     andConditions.push({
       [Op.or]: aliases.flatMap((alias) => ([
         where(col("category.category_name"), { [Op.like]: `%${alias}%` }),
         { asset_name: { [Op.like]: `%${alias}%` } },
+        { description: { [Op.like]: `%${alias}%` } },
+        { division: { [Op.like]: `%${alias}%` } },
+        { department: { [Op.like]: `%${alias}%` } },
+        { owner_name: { [Op.like]: `%${alias}%` } },
         { hostname: { [Op.like]: `%${alias}%` } },
       ])),
     });
