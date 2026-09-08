@@ -31,6 +31,7 @@ import inventoryRoutes from "./itam/inventory/inventoryRoute.js";
 import holidayRoutes from "./cmms/holiday/holidayRoutes.js";
 import dashboardRoutes from "./dashboard/dashboardRoute.js";
 import guideImageRoutes from "./shared/guideImages/guideImageRoute.js";
+import databaseMonitoringRoutes from "./databaseMonitoring/databaseMonitoringRoute.js";
 
 const router =
     express.Router();
@@ -158,6 +159,11 @@ router.use(
 router.use(
     "/guide-images",
     guideImageRoutes
+);
+
+router.use(
+    "/database-monitoring",
+    databaseMonitoringRoutes
 );
 
 export default router;

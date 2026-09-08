@@ -27,6 +27,8 @@ dotenv.config({
 
 const { default: app } =
  await import("./app.js");
+const { startDatabaseMonitoringScheduler } =
+ await import("./src/jobs/databaseMonitoringScheduler.js");
 
 const PORT = Number(
  process.env.PORT || 3000
@@ -60,6 +62,7 @@ const io = new Server(server, {
 });
 
 app.set("io", io);
+startDatabaseMonitoringScheduler();
 
 io.use((socket, next) => {
  try {
