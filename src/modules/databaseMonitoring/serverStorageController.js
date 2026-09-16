@@ -37,3 +37,22 @@ export async function getServerStorageOverview(req, res) {
   });
  }
 }
+
+export async function saveServerStorageNote(req, res) {
+ try {
+  const result = await serverStorageService.saveServerNote(req.body);
+
+  return res.status(200).json({
+   success: true,
+   message: "Keterangan server berhasil disimpan",
+   ...result,
+  });
+ } catch (error) {
+  console.error("Error saving server storage note:", error);
+
+  return res.status(error.statusCode || 500).json({
+   success: false,
+   message: error.message || "Gagal menyimpan keterangan server",
+  });
+ }
+}

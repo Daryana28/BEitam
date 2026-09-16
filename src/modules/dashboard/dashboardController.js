@@ -22,6 +22,11 @@ const HARDWARE_SUMMARY_TABS = [
   { key: "scanner", label: "SCANNER", aliases: ["scanner", "scanners", "barcode scanner", "bht"] },
   { key: "accessdoor", label: "ACCESSDOOR", aliases: ["accessdoor", "acces door", "access door", "reader", "fingerprint", "face attendance", "suprema"] },
 ];
+const SOFTWARE_SUMMARY_CATEGORY_ALIASES = [
+  { label: "HARDWARE WARRANTY", aliases: ["hardware warranty", "warranty hardware", "garansi hardware"] },
+  { label: "LICENSE SOFTWARE", aliases: ["license software", "software license", "lisensi software", "lisensi aplikasi"] },
+  { label: "MAINTENANCE FEE", aliases: ["maintenance fee", "biaya maintenance", "maintenance cost", "support fee"] },
+];
 const MAINTENANCE_CATEGORY_GROUPS = [
   { key: "hardware", label: "Hardware", aliases: ["hardware"] },
   { key: "software-hardware", label: "Software Hardware", aliases: ["software hardware", "software hw", "software_hw", "software-hardware"] },
@@ -279,7 +284,39 @@ function resolveFallbackAssetType(assetRow = {}) {
 
 function resolveAssetSummaryCategory(assetRow = {}) {
   if (isSoftwareAssetSummaryRow(assetRow)) {
-    return "Software";
+    const categoryChain = getAssetCategoryChainNames(assetRow);
+    const valuesToCheck = [
+      assetRow?.asset_name,
+      assetRow?.hostname,
+      ...categoryChain,
+    ]
+      .map(normalizeText)
+      .filter(Boolean);
+    const matchedTab = SOFTWARE_SUMMARY_CATEGORY_ALIASES.find((tab) =>
+      tab.aliases.some((alias) => {
+        const normalizedAlias = normalizeText(alias);
+        return valuesToCheck.some(
+          (value) =>
+            value === normalizedAlias ||
+            value.includes(normalizedAlias) ||
+            normalizedAlias.includes(value)
+        );
+      })
+    );
+
+    if (matchedTab) {
+      return matchedTab.label;
+    }
+
+    const scopedSoftwareCategory = categoryChain.find((name) => {
+      const normalized = normalizeText(name);
+      return normalized
+        && normalized !== "software hardware"
+        && normalized !== "software"
+        && normalized !== "lainnya";
+    });
+
+    return scopedSoftwareCategory ? String(scopedSoftwareCategory).trim().toUpperCase() : "Software";
   }
 
   const categoryChain = getAssetCategoryChainNames(assetRow);

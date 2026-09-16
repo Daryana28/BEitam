@@ -56,6 +56,20 @@ BEGIN
  CREATE INDEX [IX_server_storage_snapshots_captured_at]
   ON [dbo].[server_storage_snapshots] ([captured_at] DESC);
 END
+
+IF NOT EXISTS (
+ SELECT 1
+ FROM sys.objects
+ WHERE object_id = OBJECT_ID(N'[dbo].[server_storage_notes]')
+  AND type = N'U'
+)
+BEGIN
+ CREATE TABLE [dbo].[server_storage_notes] (
+  [server_name] NVARCHAR(128) NOT NULL PRIMARY KEY,
+  [note] NVARCHAR(256) NOT NULL,
+  [updated_at] DATETIMEOFFSET NOT NULL DEFAULT SYSDATETIMEOFFSET()
+ );
+END
 `;
 
  await sequelize.query(query);
@@ -268,12 +282,35 @@ SELECT
 FROM pairs
 ORDER BY growthBytes DESC;
 `,
-  { replacements, type: QueryTypes.SELECT }
+ { replacements, type: QueryTypes.SELECT }
  );
+
+ const notes = await sequelize.query(
+  `
+SELECT
+ [server_name] AS serverName,
+ [note] AS note
+FROM [dbo].[server_storage_notes]
+ORDER BY [server_name] ASC;
+`,
+  { type: QueryTypes.SELECT }
+ );
+
+ const serverNotes = notes.reduce((items, row) => {
+  const serverName = normalizeText(row.serverName, null);
+  const note = normalizeText(row.note, null);
+
+  if (serverName && note) {
+   items[serverName] = note;
+  }
+
+  return items;
+ }, {});
 
  return {
   days,
   drives: latest,
+  serverNotes,
   history: {
    snapshots,
    growth,
@@ -281,8 +318,59 @@ ORDER BY growthBytes DESC;
  };
 }
 
+async function saveServerNote(payload = {}) {
+ await ensureServerStorageTableReady();
+
+ const serverName = normalizeText(payload.serverName, null);
+ const note = normalizeText(payload.note, "");
+
+ if (!serverName) {
+  const error = new Error("Nama server wajib diisi.");
+  error.statusCode = 400;
+  throw error;
+ }
+
+ if (!note) {
+  await sequelize.query(
+   `
+DELETE FROM [dbo].[server_storage_notes]
+WHERE [server_name] = :serverName;
+`,
+   {
+    replacements: { serverName },
+   }
+  );
+
+  return { serverName, note: "" };
+ }
+
+ await sequelize.query(
+  `
+MERGE [dbo].[server_storage_notes] AS target
+USING (SELECT :serverName AS [server_name], :note AS [note]) AS source
+ON target.[server_name] = source.[server_name]
+WHEN MATCHED THEN
+ UPDATE SET
+  [note] = source.[note],
+  [updated_at] = SYSDATETIMEOFFSET()
+WHEN NOT MATCHED THEN
+ INSERT ([server_name], [note], [updated_at])
+ VALUES (source.[server_name], source.[note], SYSDATETIMEOFFSET());
+`,
+  {
+   replacements: {
+    serverName,
+    note: note.slice(0, 256),
+   },
+  }
+ );
+
+ return { serverName, note: note.slice(0, 256) };
+}
+
 export default {
  ensureServerStorageTableReady,
  saveAgentSnapshot,
  getOverview,
+ saveServerNote,
 };

@@ -12,6 +12,7 @@ import {
 import {
  getServerStorageOverview,
  receiveServerStorageSnapshot,
+ saveServerStorageNote,
 } from "./serverStorageController.js";
 
 const router = Router();
@@ -19,6 +20,7 @@ const adminOnly = roleMiddleware("ADMIN", "SUPERADMIN", "SUPERADMINISTRATOR");
 
 router.get("/file-sharing", authMiddleware, adminOnly, getFileSharingOverview);
 router.get("/server-storage/overview", authMiddleware, adminOnly, getServerStorageOverview);
+router.put("/server-storage/notes", authMiddleware, adminOnly, saveServerStorageNote);
 router.post("/server-storage/snapshots", receiveServerStorageSnapshot);
 router.get("/overview", authMiddleware, adminOnly, getOverview);
 router.get("/current", authMiddleware, adminOnly, getCurrentSizes);
