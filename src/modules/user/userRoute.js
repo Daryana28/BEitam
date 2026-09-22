@@ -11,6 +11,7 @@ import roleController from "./roleController.js";
 const router = Router();
 
 const ADMIN_ROLES = ["SUPERADMIN", "ADMIN"];
+const SUPERADMIN_ROLES = ["SUPERADMIN", "SUPERADMINISTRATOR"];
 
 const requireAuth = (req, res, next) => {
   if (!req.user || !req.user.id) {
@@ -62,6 +63,13 @@ router.get(
 );
 
 router.get(
+    "/menu-permissions",
+    authMiddleware,
+    roleMiddleware(...SUPERADMIN_ROLES),
+    userController.getMenuPermissions
+);
+
+router.get(
     "/",
     authMiddleware,
     roleMiddleware(...ADMIN_ROLES),
@@ -87,6 +95,20 @@ router.post(
     authMiddleware,
     roleMiddleware(...ADMIN_ROLES),
     userController.resetPassword
+);
+
+router.get(
+    "/:id/menu-permissions",
+    authMiddleware,
+    roleMiddleware(...SUPERADMIN_ROLES),
+    userController.getUserMenuPermissions
+);
+
+router.put(
+    "/:id/menu-permissions",
+    authMiddleware,
+    roleMiddleware(...SUPERADMIN_ROLES),
+    userController.updateUserMenuPermissions
 );
 
 router.put(

@@ -6,6 +6,12 @@ import {
     getExistingUserColumns,
     pickExistingUserPayload,
 } from "./userColumnHelper.js";
+import {
+    getAllowedPermissionKeys,
+    getAllowedPermissionMap,
+    clearAllowedPermissionKeys,
+    setAllowedPermissionKeys,
+} from "./userMenuPermissionService.js";
 
 const SALT_ROUNDS = 10;
 const BASE_USER_ATTRIBUTES = [
@@ -30,6 +36,20 @@ const generateRandomPassword = () => {
         pass += chars.charAt(Math.floor(Math.random() * chars.length));
     }
     return pass;
+};
+
+const attachMenuPermissionsToRows = async (rows = []) => {
+    const permissionMap = await getAllowedPermissionMap(rows.map((row) => row.user_id));
+
+    return rows.map((row) => {
+        const json = typeof row.toJSON === "function" ? row.toJSON() : row;
+        const permissionState = permissionMap.get(String(json.user_id)) || { permissions: [], configured: false };
+        return {
+            ...json,
+            menu_permissions: permissionState.permissions,
+            menu_permissions_configured: permissionState.configured,
+        };
+    });
 };
 
 const getAll = async (query = {}) => {
@@ -77,7 +97,7 @@ const getAll = async (query = {}) => {
     });
 
     return {
-        rows,
+        rows: await attachMenuPermissionsToRows(rows),
         total,
         page: parseInt(page, 10),
         pageSize: limit,
@@ -88,7 +108,7 @@ const getAll = async (query = {}) => {
 const getById = async (id) => {
     const userAttributes = await getExistingUserColumns(BASE_USER_ATTRIBUTES);
 
-    return await User.findByPk(id, {
+    const user = await User.findByPk(id, {
         include: [
             {
                 model: Role,
@@ -99,10 +119,19 @@ const getById = async (id) => {
         ],
         attributes: userAttributes,
     });
+
+    if (!user) return null;
+
+    const json = user.toJSON();
+    return {
+        ...json,
+        menu_permissions: await getAllowedPermissionKeys(id),
+        menu_permissions_configured: (await getAllowedPermissionMap([id])).get(String(id))?.configured || false,
+    };
 };
 
-const create = async (data) => {
-    const { username, full_name, email = `${username}@ikoito.co.id`, role_ids = [], is_active = true } = data;
+const create = async (data, options = {}) => {
+    const { username, full_name, email = `${username}@ikoito.co.id`, role_ids = [], is_active = true, menu_permissions, menu_permissions_configured } = data;
 
     const existing = await User.findOne({
         where: { username },
@@ -137,6 +166,10 @@ const create = async (data) => {
         await user.setRoles(roleRecords);
     }
 
+    if (options.canManagePermissions && menu_permissions_configured === true) {
+        await setAllowedPermissionKeys(user.user_id, menu_permissions);
+    }
+
     const userDetails = await getById(user.user_id);
     return {
         user: userDetails,
@@ -145,12 +178,12 @@ const create = async (data) => {
     };
 };
 
-const update = async (id, data) => {
+const update = async (id, data, options = {}) => {
     const user = await User.findByPk(id);
 
     if (!user) return null;
 
-    const { username, full_name, email, password, role_ids, is_active } = data;
+    const { username, full_name, email, password, role_ids, is_active, menu_permissions, menu_permissions_configured } = data;
 
     if (username && username !== user.username) {
         const existing = await User.findOne({ where: { username } });
@@ -179,6 +212,12 @@ const update = async (id, data) => {
         });
 
         await user.setRoles(roleRecords);
+    }
+
+    if (options.canManagePermissions && menu_permissions_configured === true) {
+        await setAllowedPermissionKeys(id, menu_permissions);
+    } else if (options.canManagePermissions && menu_permissions_configured === false) {
+        await clearAllowedPermissionKeys(id);
     }
 
     return await getById(id);

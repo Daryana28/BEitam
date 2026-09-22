@@ -4,11 +4,24 @@ import jwt from "jsonwebtoken";
 import authRepository from "./authRepository.js";
 import writeAudit from "../../core/utils/writeAudit.js";
 import { hasUserColumn } from "../user/userColumnHelper.js";
+import { getAllowedPermissionKeys, hasConfiguredMenuPermissions } from "../user/userMenuPermissionService.js";
 
 const resolveMustChangePassword = async (user) => {
  const supportsColumn = await hasUserColumn("must_change_password");
  if (!supportsColumn) return 0;
  return user.must_change_password ? 1 : 0;
+};
+
+const collectRolePermissions = (user) => {
+ const permissions = new Set();
+ (user.roles || []).forEach((role) => {
+  (role.permissions || []).forEach((permission) => {
+   if (permission?.permission_name) {
+    permissions.add(permission.permission_name);
+   }
+  });
+ });
+ return Array.from(permissions);
 };
 
 const login = async (
@@ -83,6 +96,14 @@ const login = async (
     x.role_name
   ) || [];
 
+ const permissions = [
+  ...new Set([
+   ...collectRolePermissions(user),
+   ...(await getAllowedPermissionKeys(user.user_id)),
+  ]),
+ ];
+ const menuPermissionsConfigured = await hasConfiguredMenuPermissions(user.user_id);
+
  const mustChangePassword =
   await resolveMustChangePassword(
    user
@@ -149,6 +170,8 @@ const login = async (
     email:
      user.email,
     roles,
+    permissions,
+    menu_permissions_configured: menuPermissionsConfigured,
     must_change_password: mustChangePassword,
     profile_picture: profilePicture,
    },
@@ -187,6 +210,14 @@ const refresh = async (refreshToken) => {
    (x) =>
     x.role_name
   ) || [];
+
+ const permissions = [
+  ...new Set([
+   ...collectRolePermissions(user),
+   ...(await getAllowedPermissionKeys(user.user_id)),
+  ]),
+ ];
+ const menuPermissionsConfigured = await hasConfiguredMenuPermissions(user.user_id);
 
  const mustChangePassword =
   await resolveMustChangePassword(
@@ -236,6 +267,8 @@ const refresh = async (refreshToken) => {
    email:
     user.email,
    roles,
+   permissions,
+   menu_permissions_configured: menuPermissionsConfigured,
    must_change_password: mustChangePassword,
   },
  };

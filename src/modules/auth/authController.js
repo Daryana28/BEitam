@@ -1,8 +1,9 @@
 // be/src/modules/auth/authController.js
 import authService from "./authService.js";
 import writeAudit from "../../core/utils/writeAudit.js";
-import { User, Role, Department } from "../../models/index.js";
+import { User, Role, Permission, Department } from "../../models/index.js";
 import { getExistingUserColumns } from "../user/userColumnHelper.js";
+import { getAllowedPermissionKeys, hasConfiguredMenuPermissions } from "../user/userMenuPermissionService.js";
 
 export const login = async (
  req,
@@ -199,7 +200,19 @@ export const me =
     const user = await User.findByPk(req.user.id, {
       attributes: userAttributes,
       include: [
-        { model: Role, as: "roles", attributes: ["role_name"] },
+        {
+          model: Role,
+          as: "roles",
+          attributes: ["role_name"],
+          include: [
+            {
+              model: Permission,
+              as: "permissions",
+              attributes: ["permission_name"],
+              through: { attributes: [] },
+            },
+          ],
+        },
         { model: Department, attributes: ["department_name"] },
       ],
     });
@@ -212,6 +225,19 @@ export const me =
     }
 
     const roles = user.roles?.map((r) => r.role_name) || [];
+    const rolePermissions = new Set();
+    (user.roles || []).forEach((role) => {
+      (role.permissions || []).forEach((permission) => {
+        if (permission?.permission_name) rolePermissions.add(permission.permission_name);
+      });
+    });
+    const permissions = [
+      ...new Set([
+        ...Array.from(rolePermissions),
+        ...(await getAllowedPermissionKeys(user.user_id)),
+      ]),
+    ];
+    const menuPermissionsConfigured = await hasConfiguredMenuPermissions(user.user_id);
     const baseUrl = `${req.protocol}://${req.get('host')}`;
     const profilePicture = user.profile_picture
       ? (user.profile_picture.startsWith('http') ? user.profile_picture : `${baseUrl}${user.profile_picture}`)
@@ -225,6 +251,8 @@ export const me =
         full_name: user.full_name,
         email: user.email,
         roles,
+        permissions,
+        menu_permissions_configured: menuPermissionsConfigured,
         profile_picture: profilePicture,
         department: user.Department?.department_name || "",
       },

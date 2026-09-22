@@ -10,6 +10,11 @@ import {
   hasUserColumn,
   pickExistingUserPayload,
 } from "./userColumnHelper.js";
+import {
+  getAllowedPermissionKeys,
+  getMenuPermissionTree,
+  setAllowedPermissionKeys,
+} from "./userMenuPermissionService.js";
 
 const PROFILE_USER_ATTRIBUTES = [
   "user_id",
@@ -20,6 +25,18 @@ const PROFILE_USER_ATTRIBUTES = [
   "profile_picture",
   "department_id",
 ];
+
+const SUPERADMIN_ROLES = ["SUPERADMIN", "SUPERADMINISTRATOR"];
+
+function isSuperAdmin(req) {
+  const roles = Array.isArray(req.user?.roles) ? req.user.roles : [];
+  return roles.some((role) => SUPERADMIN_ROLES.includes(String(role).toUpperCase()));
+}
+
+function hasPermissionPayload(body = {}) {
+  return Object.prototype.hasOwnProperty.call(body, "menu_permissions") ||
+    Object.prototype.hasOwnProperty.call(body, "menu_permissions_configured");
+}
 
 const getAll = async (req, res) => {
     try {
@@ -70,7 +87,16 @@ const getById = async (req, res) => {
 
 const create = async (req, res) => {
     try {
-        const result = await userService.create(req.body);
+        if (hasPermissionPayload(req.body) && !isSuperAdmin(req)) {
+            return res.status(403).json({
+                success: false,
+                message: "Hanya SUPERADMIN yang boleh mengatur permission menu.",
+            });
+        }
+
+        const result = await userService.create(req.body, {
+            canManagePermissions: isSuperAdmin(req),
+        });
 
         return res.status(201).json({
             success: true,
@@ -87,7 +113,16 @@ const create = async (req, res) => {
 
 const update = async (req, res) => {
     try {
-        const result = await userService.update(req.params.id, req.body);
+        if (hasPermissionPayload(req.body) && !isSuperAdmin(req)) {
+            return res.status(403).json({
+                success: false,
+                message: "Hanya SUPERADMIN yang boleh mengatur permission menu.",
+            });
+        }
+
+        const result = await userService.update(req.params.id, req.body, {
+            canManagePermissions: isSuperAdmin(req),
+        });
 
         if (!result) {
             return res.status(404).json({
@@ -370,6 +405,54 @@ const resetPassword = async (req, res) => {
   }
 };
 
+const getMenuPermissions = async (_req, res) => {
+  try {
+    const tree = await getMenuPermissionTree();
+    return res.status(200).json({
+      success: true,
+      message: "Success",
+      data: tree,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+const getUserMenuPermissions = async (req, res) => {
+  try {
+    const permissions = await getAllowedPermissionKeys(req.params.id);
+    return res.status(200).json({
+      success: true,
+      message: "Success",
+      data: permissions,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+const updateUserMenuPermissions = async (req, res) => {
+  try {
+    const permissions = await setAllowedPermissionKeys(req.params.id, req.body?.menu_permissions || []);
+    return res.status(200).json({
+      success: true,
+      message: "Permission menu berhasil diperbarui",
+      data: permissions,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
 export default {
     getAll,
     getById,
@@ -381,4 +464,7 @@ export default {
     updateUserProfilePicture,
     changePassword,
     resetPassword,
+    getMenuPermissions,
+    getUserMenuPermissions,
+    updateUserMenuPermissions,
 };

@@ -892,36 +892,65 @@ export const getMonthlyScheduleMatrix = async (req, res) => {
 
     // Collect all check IDs to batch-load actuals
     const checkIdToMeta = [];
+    const standardIds = standards.map((standard) => standard.id);
+    const schedules = standardIds.length > 0
+      ? await MaintenanceSchedule.findAll({
+          where: {
+            yearly_standard_id: yearlyStandard.id,
+            standard_maintenance_id: { [Op.in]: standardIds },
+            status: { [Op.ne]: "CANCELLED" },
+          },
+          include: [
+            {
+              model: Asset,
+              as: "asset",
+            },
+          ],
+          order: [["standard_maintenance_id", "ASC"], ["id", "ASC"]],
+        })
+      : [];
+    const schedulesByStandardId = new Map();
+    schedules.forEach((schedule) => {
+      const standardId = schedule.standard_maintenance_id;
+      if (!schedulesByStandardId.has(standardId)) {
+        schedulesByStandardId.set(standardId, []);
+      }
+      schedulesByStandardId.get(standardId).push(schedule);
+    });
 
     for (const sm of standards) {
       if (!sm.details) continue;
+      const standardSchedules = schedulesByStandardId.get(sm.id) || [null];
       for (const detail of sm.details) {
         if (!detail.pengecekanList) continue;
         for (const check of detail.pengecekanList) {
-          checkIdToMeta.push({
-            sm,
-            detail,
-            check
-          });
-          matrixData.push({
-            schedule_id: null,
-            asset: null,
-            kategori: sm.kategori,
-            subKategori: sm.subKategori,
-            namaPerangkat: sm.namaPerangkat,
-            tipePerangkat: sm.tipePerangkat,
-            subPerangkat: sm.subPerangkat,
-            detail_id: detail.id,
-            fungsi: detail.fungsi,
-            deskripsi: detail.deskripsi,
-            check_id: check.id,
-            pengecekan: check.pengecekan,
-            standard: check.standard,
-            periodik: check.periodik,
-            cycle_time_minutes: Number(check.cycle_time_minutes || 0),
-            planned_dates: Array.isArray(check.planned_dates) ? check.planned_dates : [],
-            checkboxes: []
-          });
+          for (const schedule of standardSchedules) {
+            checkIdToMeta.push({
+              sm,
+              detail,
+              check,
+              schedule
+            });
+            matrixData.push({
+              schedule_id: schedule?.id || null,
+              asset: schedule?.asset || null,
+              kategori: sm.kategori,
+              subKategori: sm.subKategori,
+              namaPerangkat: sm.namaPerangkat,
+              tipePerangkat: sm.tipePerangkat,
+              subPerangkat: sm.subPerangkat,
+              detail_id: detail.id,
+              fungsi: detail.fungsi,
+              deskripsi: detail.deskripsi,
+              check_id: check.id,
+              pengecekan: check.pengecekan,
+              standard: check.standard,
+              periodik: check.periodik,
+              cycle_time_minutes: Number(check.cycle_time_minutes || 0),
+              planned_dates: Array.isArray(check.planned_dates) ? check.planned_dates : [],
+              checkboxes: []
+            });
+          }
         }
       }
     }
@@ -932,10 +961,19 @@ export const getMonthlyScheduleMatrix = async (req, res) => {
     const monthStart = `${year}-${monthStr}-01`;
     const lastDayOfMonth = dayjs(monthStart).endOf("month").format("YYYY-MM-DD");
 
+    const allScheduleIds = matrixData.map((item) => item.schedule_id).filter(Boolean);
     const existingActuals = allCheckIds.length > 0
       ? await MaintenanceActual.findAll({
           where: {
             check_id: { [Op.in]: allCheckIds },
+            ...(allScheduleIds.length > 0
+              ? {
+                  [Op.or]: [
+                    { schedule_id: { [Op.in]: allScheduleIds } },
+                    { schedule_id: null },
+                  ],
+                }
+              : {}),
             tanggal: {
               [Op.between]: [monthStart, lastDayOfMonth]
             }
@@ -944,19 +982,17 @@ export const getMonthlyScheduleMatrix = async (req, res) => {
         })
       : [];
 
-    const actualsByCheckId = new Map();
+    const actualsByScheduleCheckDate = new Map();
     existingActuals.forEach(a => {
-      if (!actualsByCheckId.has(a.check_id)) {
-        actualsByCheckId.set(a.check_id, new Map());
-      }
-      actualsByCheckId.get(a.check_id).set(a.tanggal, a);
+      const scheduleKey = a.schedule_id || "no-schedule";
+      const key = `${scheduleKey}::${a.check_id}::${a.tanggal}`;
+      actualsByScheduleCheckDate.set(key, a);
     });
 
     // Generate virtual checkboxes for each matrix entry.
     // Prefer planned_dates from standard maintenance so the Schedule tab reflects manual remapping immediately.
     const numYear = parseInt(year);
     for (const item of matrixData) {
-      const checkActuals = actualsByCheckId.get(item.check_id) || new Map();
       const allDates = await getResolvedPlannedDatesWithCache(
         plannedDatesCache,
         numYear,
@@ -968,10 +1004,14 @@ export const getMonthlyScheduleMatrix = async (req, res) => {
       const monthDates = allDates.filter(d => d.startsWith(`${year}-${monthStr}`));
 
       item.checkboxes = monthDates.map(date => {
-        const existing = checkActuals.get(date);
+        const scheduleKey = item.schedule_id || "no-schedule";
+        const exactExisting = actualsByScheduleCheckDate.get(`${scheduleKey}::${item.check_id}::${date}`);
+        const legacyExisting = actualsByScheduleCheckDate.get(`no-schedule::${item.check_id}::${date}`);
+        const existing = exactExisting || legacyExisting;
         if (existing) {
           return {
             actual_id: existing.id,
+            schedule_id: existing.schedule_id,
             check_id: existing.check_id,
             date: existing.tanggal,
             status: existing.status,
@@ -980,6 +1020,7 @@ export const getMonthlyScheduleMatrix = async (req, res) => {
         }
         return {
           actual_id: null,
+          schedule_id: item.schedule_id,
           check_id: item.check_id,
           date: date,
           status: "PLAN",

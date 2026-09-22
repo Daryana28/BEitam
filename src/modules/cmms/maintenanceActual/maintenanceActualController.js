@@ -2,14 +2,18 @@ import { MaintenanceActual, MaintenanceAbnormalLog, MaintenanceLogSheet, sequeli
 
 export const createActualEntry = async (req, res) => {
   try {
-    const { check_id, tanggal } = req.body;
+    const { schedule_id, check_id, tanggal } = req.body;
 
     if (!check_id || !tanggal) {
       return res.status(400).json({ success: false, message: "check_id and tanggal are required" });
     }
 
+    const whereClause = schedule_id
+      ? { schedule_id, check_id, tanggal }
+      : { check_id, tanggal };
+
     const existing = await MaintenanceActual.findOne({
-      where: { check_id, tanggal }
+      where: whereClause
     });
 
     if (existing) {
@@ -21,7 +25,7 @@ export const createActualEntry = async (req, res) => {
     }
 
     const actual = await MaintenanceActual.create({
-      schedule_id: null,
+      schedule_id: schedule_id || null,
       check_id,
       tanggal,
       status: "PLAN",
@@ -42,7 +46,7 @@ export const createActualEntry = async (req, res) => {
 
 export const upsertAndSetStatus = async (req, res) => {
   try {
-    const { check_id, tanggal, status } = req.body;
+    const { schedule_id, check_id, tanggal, status } = req.body;
 
     if (!check_id || !tanggal) {
       return res.status(400).json({ success: false, message: "check_id and tanggal are required" });
@@ -51,15 +55,19 @@ export const upsertAndSetStatus = async (req, res) => {
     const userId = req.user?.id || req.user?.user_id || null;
 
     // Find or create the actual record
+    const whereClause = schedule_id
+      ? { schedule_id, check_id, tanggal }
+      : { check_id, tanggal };
+
     let actual = await MaintenanceActual.findOne({
-      where: { check_id, tanggal }
+      where: whereClause
     });
 
     const isNew = !actual;
 
     if (!actual) {
       actual = await MaintenanceActual.create({
-        schedule_id: null,
+        schedule_id: schedule_id || null,
         check_id,
         tanggal,
         status: "PLAN",
