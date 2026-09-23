@@ -172,9 +172,12 @@ const resolvePlannedDates = async (year, check, fallbackPeriodik) => {
 
 export const generateSchedule = async (req, res) => {
   try {
-    const { yearly_standard_id } = req.body;
+    const { yearly_standard_id, kategori, standard_maintenance_ids } = req.body;
     const checkAttributes = await getStandardMaintenanceCheckAttributes();
     const plannedDatesCache = new Map();
+    const scopedStandardIds = Array.isArray(standard_maintenance_ids)
+      ? [...new Set(standard_maintenance_ids.map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0))]
+      : [];
 
     if (!yearly_standard_id) {
       return res.status(400).json({ success: false, message: "Yearly Standard ID is required" });
@@ -189,8 +192,16 @@ export const generateSchedule = async (req, res) => {
     await warmHolidayCache(yearlyStandard.tahun);
 
     // Batch-load all standards with details+checks in one query
+    const standardsWhere = { yearly_standard_id };
+    if (scopedStandardIds.length > 0) {
+      standardsWhere.id = { [Op.in]: scopedStandardIds };
+    }
+    if (kategori) {
+      standardsWhere.kategori = String(kategori).toUpperCase();
+    }
+
     const standardsRaw = await StandardMaintenance.findAll({
-      where: { yearly_standard_id },
+      where: standardsWhere,
       include: [
         {
           model: StandardMaintenanceDetail,
@@ -225,8 +236,13 @@ export const generateSchedule = async (req, res) => {
     });
 
     // Batch-load ALL existing schedules for this yearly standard
+    const existingScheduleWhere = { yearly_standard_id };
+    if (scopedStandardIds.length > 0) {
+      existingScheduleWhere.standard_maintenance_id = { [Op.in]: scopedStandardIds };
+    }
+
     const existingSchedules = await MaintenanceSchedule.findAll({
-      where: { yearly_standard_id },
+      where: existingScheduleWhere,
       raw: true
     });
     const scheduleMap = new Map();
@@ -438,13 +454,42 @@ export const generateSchedule = async (req, res) => {
       }
     }
 
+    let cancelledStaleCount = 0;
+    if (scopedStandardIds.length > 0 && kategori) {
+      const [cancelResult] = await sequelize.query(
+        `
+          UPDATE dbo.maintenance_schedules
+          SET status = 'CANCELLED',
+              cancel_reason = 'Auto-cancelled because standard maintenance was removed from master',
+              updated_at = GETDATE()
+          WHERE yearly_standard_id = :yearly_standard_id
+            AND status <> 'CANCELLED'
+            AND standard_maintenance_id NOT IN (:scopedStandardIds)
+            AND standard_maintenance_id IN (
+              SELECT id
+              FROM dbo.standard_maintenances
+              WHERE yearly_standard_id = :yearly_standard_id
+                AND UPPER(kategori) = :kategori
+            )
+        `,
+        {
+          replacements: {
+            yearly_standard_id,
+            kategori: String(kategori).toUpperCase(),
+            scopedStandardIds,
+          },
+        }
+      );
+      cancelledStaleCount = Number(cancelResult?.affectedRows || cancelResult || 0);
+    }
+
     // Clear holiday cache after mutations
     clearHolidayCache();
 
     res.status(200).json({
       success: true,
       message: `Successfully generated ${createdCount} new maintenance schedules.`,
-      data: { created: createdCount }
+      data: { created: createdCount, cancelled_stale: cancelledStaleCount }
     });
 
   } catch (error) {
@@ -834,6 +879,12 @@ export const getMonthlyScheduleMatrix = async (req, res) => {
     const { year, month, category, yearly_standard_id } = req.query;
     const checkAttributes = await getStandardMaintenanceCheckAttributes();
     const plannedDatesCache = new Map();
+    const requestedPage = Number.parseInt(req.query.page, 10);
+    const requestedPageSize = Number.parseInt(req.query.pageSize, 10);
+    const isPaginated = Number.isFinite(requestedPage) && requestedPage > 0 &&
+      Number.isFinite(requestedPageSize) && requestedPageSize > 0;
+    const safePage = isPaginated ? requestedPage : 1;
+    const safePageSize = isPaginated ? Math.min(requestedPageSize, 100) : 0;
 
     if (!year || !month) {
       return res.status(400).json({ success: false, message: "Year and Month parameters are required" });
@@ -890,90 +941,50 @@ export const getMonthlyScheduleMatrix = async (req, res) => {
 
     const matrixData = [];
 
-    // Collect all check IDs to batch-load actuals
-    const checkIdToMeta = [];
-    const standardIds = standards.map((standard) => standard.id);
-    const schedules = standardIds.length > 0
-      ? await MaintenanceSchedule.findAll({
-          where: {
-            yearly_standard_id: yearlyStandard.id,
-            standard_maintenance_id: { [Op.in]: standardIds },
-            status: { [Op.ne]: "CANCELLED" },
-          },
-          include: [
-            {
-              model: Asset,
-              as: "asset",
-            },
-          ],
-          order: [["standard_maintenance_id", "ASC"], ["id", "ASC"]],
-        })
-      : [];
-    const schedulesByStandardId = new Map();
-    schedules.forEach((schedule) => {
-      const standardId = schedule.standard_maintenance_id;
-      if (!schedulesByStandardId.has(standardId)) {
-        schedulesByStandardId.set(standardId, []);
-      }
-      schedulesByStandardId.get(standardId).push(schedule);
-    });
-
     for (const sm of standards) {
       if (!sm.details) continue;
-      const standardSchedules = schedulesByStandardId.get(sm.id) || [null];
       for (const detail of sm.details) {
         if (!detail.pengecekanList) continue;
         for (const check of detail.pengecekanList) {
-          for (const schedule of standardSchedules) {
-            checkIdToMeta.push({
-              sm,
-              detail,
-              check,
-              schedule
-            });
-            matrixData.push({
-              schedule_id: schedule?.id || null,
-              asset: schedule?.asset || null,
-              kategori: sm.kategori,
-              subKategori: sm.subKategori,
-              namaPerangkat: sm.namaPerangkat,
-              tipePerangkat: sm.tipePerangkat,
-              subPerangkat: sm.subPerangkat,
-              detail_id: detail.id,
-              fungsi: detail.fungsi,
-              deskripsi: detail.deskripsi,
-              check_id: check.id,
-              pengecekan: check.pengecekan,
-              standard: check.standard,
-              periodik: check.periodik,
-              cycle_time_minutes: Number(check.cycle_time_minutes || 0),
-              planned_dates: Array.isArray(check.planned_dates) ? check.planned_dates : [],
-              checkboxes: []
-            });
-          }
+          matrixData.push({
+            schedule_id: null,
+            asset: null,
+            kategori: sm.kategori,
+            subKategori: sm.subKategori,
+            namaPerangkat: sm.namaPerangkat,
+            tipePerangkat: sm.tipePerangkat,
+            subPerangkat: sm.subPerangkat,
+            detail_id: detail.id,
+            fungsi: detail.fungsi,
+            deskripsi: detail.deskripsi,
+            check_id: check.id,
+            pengecekan: check.pengecekan,
+            standard: check.standard,
+            periodik: check.periodik,
+            cycle_time_minutes: Number(check.cycle_time_minutes || 0),
+            planned_dates: Array.isArray(check.planned_dates) ? check.planned_dates : [],
+            checkboxes: []
+          });
         }
       }
     }
 
-    // Batch-load existing actuals for all checks in the target month
-    const allCheckIds = checkIdToMeta.map(c => c.check.id);
+    const totalRows = matrixData.length;
+    const responseRows = isPaginated
+      ? matrixData.slice((safePage - 1) * safePageSize, safePage * safePageSize)
+      : matrixData;
+
+    // Batch-load existing actuals only for rows returned to the client.
+    const allCheckIds = [...new Set(responseRows.map((item) => item.check_id).filter(Boolean))];
     const monthStr = String(month).padStart(2, "0");
     const monthStart = `${year}-${monthStr}-01`;
     const lastDayOfMonth = dayjs(monthStart).endOf("month").format("YYYY-MM-DD");
 
-    const allScheduleIds = matrixData.map((item) => item.schedule_id).filter(Boolean);
     const existingActuals = allCheckIds.length > 0
       ? await MaintenanceActual.findAll({
           where: {
             check_id: { [Op.in]: allCheckIds },
-            ...(allScheduleIds.length > 0
-              ? {
-                  [Op.or]: [
-                    { schedule_id: { [Op.in]: allScheduleIds } },
-                    { schedule_id: null },
-                  ],
-                }
-              : {}),
+            schedule_id: null,
             tanggal: {
               [Op.between]: [monthStart, lastDayOfMonth]
             }
@@ -984,15 +995,14 @@ export const getMonthlyScheduleMatrix = async (req, res) => {
 
     const actualsByScheduleCheckDate = new Map();
     existingActuals.forEach(a => {
-      const scheduleKey = a.schedule_id || "no-schedule";
-      const key = `${scheduleKey}::${a.check_id}::${a.tanggal}`;
+      const key = `no-schedule::${a.check_id}::${a.tanggal}`;
       actualsByScheduleCheckDate.set(key, a);
     });
 
     // Generate virtual checkboxes for each matrix entry.
     // Prefer planned_dates from standard maintenance so the Schedule tab reflects manual remapping immediately.
     const numYear = parseInt(year);
-    for (const item of matrixData) {
+    for (const item of responseRows) {
       const allDates = await getResolvedPlannedDatesWithCache(
         plannedDatesCache,
         numYear,
@@ -1004,10 +1014,7 @@ export const getMonthlyScheduleMatrix = async (req, res) => {
       const monthDates = allDates.filter(d => d.startsWith(`${year}-${monthStr}`));
 
       item.checkboxes = monthDates.map(date => {
-        const scheduleKey = item.schedule_id || "no-schedule";
-        const exactExisting = actualsByScheduleCheckDate.get(`${scheduleKey}::${item.check_id}::${date}`);
-        const legacyExisting = actualsByScheduleCheckDate.get(`no-schedule::${item.check_id}::${date}`);
-        const existing = exactExisting || legacyExisting;
+        const existing = actualsByScheduleCheckDate.get(`no-schedule::${item.check_id}::${date}`);
         if (existing) {
           return {
             actual_id: existing.id,
@@ -1031,7 +1038,14 @@ export const getMonthlyScheduleMatrix = async (req, res) => {
 
     res.status(200).json({
       success: true,
-      data: matrixData
+      data: isPaginated
+        ? {
+            rows: responseRows,
+            total: totalRows,
+            page: safePage,
+            pageSize: safePageSize,
+          }
+        : matrixData
     });
 
   } catch (error) {

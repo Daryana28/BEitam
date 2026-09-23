@@ -10,7 +10,7 @@ export const createActualEntry = async (req, res) => {
 
     const whereClause = schedule_id
       ? { schedule_id, check_id, tanggal }
-      : { check_id, tanggal };
+      : { schedule_id: null, check_id, tanggal };
 
     const existing = await MaintenanceActual.findOne({
       where: whereClause
@@ -57,7 +57,7 @@ export const upsertAndSetStatus = async (req, res) => {
     // Find or create the actual record
     const whereClause = schedule_id
       ? { schedule_id, check_id, tanggal }
-      : { check_id, tanggal };
+      : { schedule_id: null, check_id, tanggal };
 
     let actual = await MaintenanceActual.findOne({
       where: whereClause
