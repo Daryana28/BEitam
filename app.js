@@ -14,7 +14,15 @@ const app = express();
 app.set("trust proxy", 1);
 app.disable("x-powered-by");
 
-const allowedOrigin = process.env.FRONTEND_URL || "http://localhost:5173";
+const allowedOrigins = [
+  process.env.FRONTEND_URL,
+  ...(process.env.FRONTEND_URLS || "").split(","),
+  "http://localhost:5173",
+  "http://172.17.100.11",
+  "http://172.17.100.11:455",
+]
+  .map((origin) => String(origin || "").trim())
+  .filter(Boolean);
 
 app.use(
   helmet({
@@ -35,7 +43,13 @@ app.use(compression());
 
 app.use(
   cors({
-    origin: allowedOrigin,
+    origin(origin, callback) {
+      if (!origin || allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+
+      return callback(new Error(`Origin ${origin} is not allowed by CORS`));
+    },
     credentials: true,
   })
 );
