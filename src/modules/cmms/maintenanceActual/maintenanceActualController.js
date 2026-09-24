@@ -1,8 +1,43 @@
 import { MaintenanceActual, MaintenanceAbnormalLog, MaintenanceLogSheet, sequelize } from "../../../models/index.js";
 
+const normalizeActualNote = (value) => {
+  const text = String(value || "").trim();
+  return text || null;
+};
+
+let maintenanceActualNoteColumnAvailable = null;
+
+const ensureMaintenanceActualNoteColumn = async (transaction) => {
+  if (maintenanceActualNoteColumnAvailable) return;
+
+  const [rows] = await sequelize.query(
+    `
+      SELECT 1 AS is_available
+      FROM INFORMATION_SCHEMA.COLUMNS
+      WHERE TABLE_NAME = 'maintenance_actual'
+        AND COLUMN_NAME = 'actual_note'
+    `,
+    { transaction }
+  );
+
+  maintenanceActualNoteColumnAvailable = Array.isArray(rows) && rows.length > 0;
+
+  if (!maintenanceActualNoteColumnAvailable) {
+    await sequelize.query(
+      `
+        ALTER TABLE dbo.maintenance_actual
+        ADD actual_note NVARCHAR(MAX) NULL
+      `,
+      { transaction }
+    );
+    maintenanceActualNoteColumnAvailable = true;
+  }
+};
+
 export const createActualEntry = async (req, res) => {
   try {
-    const { schedule_id, check_id, tanggal } = req.body;
+    await ensureMaintenanceActualNoteColumn();
+    const { schedule_id, check_id, tanggal, actual_note } = req.body;
 
     if (!check_id || !tanggal) {
       return res.status(400).json({ success: false, message: "check_id and tanggal are required" });
@@ -30,6 +65,7 @@ export const createActualEntry = async (req, res) => {
       tanggal,
       status: "PLAN",
       legend: "□",
+      actual_note: normalizeActualNote(actual_note),
       created_by: req.user?.id || null,
     });
 
@@ -46,7 +82,8 @@ export const createActualEntry = async (req, res) => {
 
 export const upsertAndSetStatus = async (req, res) => {
   try {
-    const { schedule_id, check_id, tanggal, status } = req.body;
+    await ensureMaintenanceActualNoteColumn();
+    const { schedule_id, check_id, tanggal, status, actual_note } = req.body;
 
     if (!check_id || !tanggal) {
       return res.status(400).json({ success: false, message: "check_id and tanggal are required" });
@@ -72,6 +109,7 @@ export const upsertAndSetStatus = async (req, res) => {
         tanggal,
         status: "PLAN",
         legend: "□",
+        actual_note: normalizeActualNote(actual_note),
         created_by: userId,
       });
     }
@@ -82,12 +120,14 @@ export const upsertAndSetStatus = async (req, res) => {
         await actual.update({
           status: "ACTUAL",
           legend: "✓",
+          actual_note: normalizeActualNote(actual_note),
           created_by: userId,
         });
       } else {
         await actual.update({
           status: "PLAN",
           legend: "□",
+          actual_note: null,
           created_by: null,
         });
         await MaintenanceAbnormalLog.destroy({
@@ -113,8 +153,9 @@ export const upsertAndSetStatus = async (req, res) => {
 export const updateActualStatus = async (req, res) => {
   const transaction = await sequelize.transaction();
   try {
+    await ensureMaintenanceActualNoteColumn(transaction);
     const { id } = req.params;
-    const { status } = req.body;
+    const { status, actual_note } = req.body;
 
     if (!status || !["PLAN", "ACTUAL"].includes(status)) {
       await transaction.rollback();
@@ -133,6 +174,7 @@ export const updateActualStatus = async (req, res) => {
       await actual.update({
         status: "ACTUAL",
         legend: "✓",
+        actual_note: normalizeActualNote(actual_note),
         created_by: userId
       }, { transaction });
     } else {
@@ -140,6 +182,7 @@ export const updateActualStatus = async (req, res) => {
       await actual.update({
         status: "PLAN",
         legend: "□",
+        actual_note: null,
         created_by: null
       }, { transaction });
 
@@ -160,7 +203,7 @@ export const updateActualStatus = async (req, res) => {
     return res.status(200).json({
       success: true,
       message: `Status successfully updated to ${status}`,
-      data: { id: actual.id, status: actual.status, legend: actual.legend }
+      data: { id: actual.id, status: actual.status, legend: actual.legend, actual_note: actual.actual_note }
     });
 
   } catch (error) {

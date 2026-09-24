@@ -31,6 +31,10 @@ export default (sequelize) => {
         allowNull: false,
         defaultValue: "□",
       },
+      actual_note: {
+        type: DataTypes.TEXT,
+        allowNull: true,
+      },
       created_by: {
         type: DataTypes.BIGINT,
         allowNull: true,

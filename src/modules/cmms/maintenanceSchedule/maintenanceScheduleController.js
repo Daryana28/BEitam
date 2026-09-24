@@ -141,6 +141,35 @@ const getStandardMaintenanceCheckAttributes = async (transaction) => {
     : [...STANDARD_MAINTENANCE_CHECK_BASE_ATTRIBUTES];
 };
 
+let maintenanceActualNoteColumnAvailable = null;
+
+const ensureMaintenanceActualNoteColumn = async (transaction) => {
+  if (maintenanceActualNoteColumnAvailable) return;
+
+  const [rows] = await sequelize.query(
+    `
+      SELECT 1 AS is_available
+      FROM INFORMATION_SCHEMA.COLUMNS
+      WHERE TABLE_NAME = 'maintenance_actual'
+        AND COLUMN_NAME = 'actual_note'
+    `,
+    { transaction }
+  );
+
+  maintenanceActualNoteColumnAvailable = Array.isArray(rows) && rows.length > 0;
+
+  if (!maintenanceActualNoteColumnAvailable) {
+    await sequelize.query(
+      `
+        ALTER TABLE dbo.maintenance_actual
+        ADD actual_note NVARCHAR(MAX) NULL
+      `,
+      { transaction }
+    );
+    maintenanceActualNoteColumnAvailable = true;
+  }
+};
+
 const getResolvedPlannedDatesCacheKey = (year, checkId, fallbackPeriodik) =>
   `${year}::${checkId || "no-check"}::${String(fallbackPeriodik || "").trim()}`;
 
@@ -172,6 +201,7 @@ const resolvePlannedDates = async (year, check, fallbackPeriodik) => {
 
 export const generateSchedule = async (req, res) => {
   try {
+    await ensureMaintenanceActualNoteColumn();
     const { yearly_standard_id, kategori, standard_maintenance_ids } = req.body;
     const checkAttributes = await getStandardMaintenanceCheckAttributes();
     const plannedDatesCache = new Map();
@@ -664,6 +694,7 @@ export const cancelSchedule = async (req, res) => {
 export const generateCheckboxes = async (req, res) => {
   const transaction = await sequelize.transaction();
   try {
+    await ensureMaintenanceActualNoteColumn(transaction);
     const { yearly_standard_id, schedule_id } = req.body;
 
     let schedules = [];
@@ -800,6 +831,7 @@ export const generateCheckboxes = async (req, res) => {
 
 export const getScheduleCheckboxes = async (req, res) => {
   try {
+    await ensureMaintenanceActualNoteColumn();
     const { id } = req.params;
     const { month } = req.query;
     const checkAttributes = await getStandardMaintenanceCheckAttributes();
@@ -848,6 +880,7 @@ export const getScheduleCheckboxes = async (req, res) => {
         week: dayjs(cbJSON.tanggal).isoWeek(),
         status: cbJSON.status,
         legend: cbJSON.legend,
+        actual_note: cbJSON.actual_note,
         check_id: cbJSON.check_id,
         check: cbJSON.check,
         abnormal: abnormal ? {
@@ -876,6 +909,7 @@ export const getScheduleCheckboxes = async (req, res) => {
 
 export const getMonthlyScheduleMatrix = async (req, res) => {
   try {
+    await ensureMaintenanceActualNoteColumn();
     const { year, month, category, yearly_standard_id } = req.query;
     const checkAttributes = await getStandardMaintenanceCheckAttributes();
     const plannedDatesCache = new Map();
@@ -969,6 +1003,17 @@ export const getMonthlyScheduleMatrix = async (req, res) => {
       }
     }
 
+    let categoryNumber = 0;
+    let previousCategoryKey = "";
+    matrixData.forEach((item) => {
+      const categoryKey = normalizeCategoryName(item.subKategori);
+      if (categoryKey !== previousCategoryKey) {
+        categoryNumber += 1;
+        previousCategoryKey = categoryKey;
+      }
+      item.category_number = categoryNumber;
+    });
+
     const totalRows = matrixData.length;
     const responseRows = isPaginated
       ? matrixData.slice((safePage - 1) * safePageSize, safePage * safePageSize)
@@ -1023,6 +1068,7 @@ export const getMonthlyScheduleMatrix = async (req, res) => {
             date: existing.tanggal,
             status: existing.status,
             legend: existing.legend,
+            actual_note: existing.actual_note,
           };
         }
         return {
@@ -1032,6 +1078,7 @@ export const getMonthlyScheduleMatrix = async (req, res) => {
           date: date,
           status: "PLAN",
           legend: "□",
+          actual_note: null,
         };
       });
     }

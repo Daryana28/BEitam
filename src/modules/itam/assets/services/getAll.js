@@ -10,7 +10,7 @@ const {
  sequelize,
 } = db;
 
-const include = [
+const baseInclude = [
  {
   model: AssetCategory,
   as: "category",
@@ -29,6 +29,9 @@ const include = [
   as: "location",
   required: false,
  },
+];
+
+const lifecycleInclude = [
  {
   model: AssetLifecycle,
   as: "lifecycles",
@@ -346,6 +349,13 @@ const likeFields = [
  const whereClause = andConditions.length > 0
   ? { [Op.and]: andConditions }
   : {};
+
+ const include = [
+  ...baseInclude,
+  ...(query.include_lifecycles === true || query.include_lifecycles === "true"
+   ? lifecycleInclude
+   : []),
+ ];
 
  const sortBy = ["purchase_date", "depreciation_date", "asset_id"].includes(query.sort_by)
   ? query.sort_by
