@@ -480,6 +480,13 @@ function formatDateYmd(value) {
   return parsed.toISOString().slice(0, 10);
 }
 
+function formatActualDateKey(value) {
+  const normalized = normalizeDateKey(value);
+  if (normalized) return normalized;
+  const raw = String(value || "").trim();
+  return raw.slice(0, 10);
+}
+
 function resolveSummaryMonthFilter(query = {}) {
   const now = new Date();
   const parsedMonth = Number.parseInt(query?.month, 10);
@@ -743,12 +750,33 @@ function buildMaintenanceStatusEntriesBySourceCategory(scheduleRows = []) {
         asset: sourceCategory,
         dueDate: normalizedDueDate,
         planCount: 1,
+        completedCount: row?.statusKey === "completed" ? 1 : 0,
+        pendingChecks: row?.statusKey === "completed"
+          ? []
+          : [{
+              checkId: row?.checkId || null,
+              actualId: row?.actualId || null,
+              pengecekan: row?.pengecekan || row?.asset || sourceCategory,
+              statusKey: row?.statusKey || "upcoming",
+              actualStatus: row?.actualStatus || "PLAN",
+            }],
         statusPriority: nextPriority,
       });
       return;
     }
 
     current.planCount += 1;
+    if (row?.statusKey === "completed") {
+      current.completedCount += 1;
+    } else {
+      current.pendingChecks.push({
+        checkId: row?.checkId || null,
+        actualId: row?.actualId || null,
+        pengecekan: row?.pengecekan || row?.asset || sourceCategory,
+        statusKey: row?.statusKey || "upcoming",
+        actualStatus: row?.actualStatus || "PLAN",
+      });
+    }
 
     if (nextPriority > current.statusPriority) {
       current.statusPriority = nextPriority;
@@ -757,10 +785,36 @@ function buildMaintenanceStatusEntriesBySourceCategory(scheduleRows = []) {
       current.dueDate = row?.dueDate || current.dueDate;
       current.endDate = row?.endDate || current.endDate;
       current.actualStatus = row?.actualStatus || current.actualStatus;
+      current.checkId = row?.checkId || current.checkId;
+      current.actualId = row?.actualId || current.actualId;
+      current.periodik = row?.periodik || current.periodik;
     }
   });
 
-  return Array.from(categoryMap.values()).map(({ statusPriority, ...item }) => item);
+  return Array.from(categoryMap.values()).map(({ statusPriority, ...item }) => {
+    const completedCount = Number(item.completedCount || 0);
+    const planCount = Number(item.planCount || 0);
+    const incompleteCount = Math.max(planCount - completedCount, 0);
+    const firstPendingCheck = Array.isArray(item.pendingChecks) ? item.pendingChecks[0] : null;
+
+    if (planCount > 0 && incompleteCount === 0) {
+      return {
+        ...item,
+        statusKey: "completed",
+        statusLabel: "Completed",
+        actualStatus: "ACTUAL",
+        incompleteCount,
+        pendingChecks: [],
+      };
+    }
+
+    return {
+      ...item,
+      incompleteCount,
+      checkId: firstPendingCheck?.checkId || item.checkId,
+      actualId: firstPendingCheck?.actualId || item.actualId,
+    };
+  });
 }
 
 function normalizeMaintenanceMonthlyStatus({ actualStatus, targetDate, today = new Date() }) {
@@ -837,7 +891,9 @@ async function buildMaintenanceMonthlyStatusSummary({ month, year, today = new D
 
   const actualByCheckAndDate = new Map();
   existingActuals.forEach((actual) => {
-    actualByCheckAndDate.set(`${actual.check_id}__${actual.tanggal}`, actual);
+    const actualDateKey = formatActualDateKey(actual.tanggal);
+    if (!actualDateKey) return;
+    actualByCheckAndDate.set(`${actual.check_id}__${actualDateKey}`, actual);
   });
 
   const monthlyPlanRows = [];
@@ -876,6 +932,7 @@ async function buildMaintenanceMonthlyStatusSummary({ month, year, today = new D
         categoryLabel: categoryGroup.label,
         sourceCategory: entry.standard?.kategori || "-",
         sourceSubCategory: entry.standard?.subKategori || "-",
+        pengecekan: entry.check?.pengecekan || "-",
         periodik,
         dueDate: date,
         endDate: date,
